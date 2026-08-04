@@ -9,6 +9,7 @@ from __future__ import annotations
 from handgesture.capture.simulation import (
     pose_fist,
     pose_open_palm,
+    pose_peace,
     pose_pinch,
     pose_point,
 )
@@ -216,3 +217,86 @@ def test_toggle_pause_round_trips():
     pipe.set_mode(Mode.BROWSER)
     assert pipe.toggle_pause() is Mode.PAUSED
     assert pipe.toggle_pause() is Mode.BROWSER
+
+
+# --- Phase 2: end-to-end through the OS adapter ----------------------------
+#
+# These drive the whole pipeline with an adapter attached, so they prove the
+# wiring from landmarks all the way to OS calls — not just that each module
+# works in isolation.
+
+from handgesture.osadapter.null import NullAdapter  # noqa: E402
+
+
+def rig(**overrides):
+    adapter = NullAdapter()
+    config = cfg()
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return adapter, GesturePipeline(config, adapter=adapter)
+
+
+def test_pipeline_without_adapter_still_resolves_intents():
+    """Simulation mode: everything runs, nothing reaches an OS."""
+    pipe = GesturePipeline(cfg())
+    state, _ = run(pipe, [pose_point()] * 5)
+    assert pipe.dispatcher is None
+    assert state.cursor is not None
+
+
+def test_cursor_movement_reaches_the_adapter():
+    adapter, pipe = rig()
+    run(pipe, [pose_point(center=(0.5, 0.5))] * 5)
+    assert adapter.count("move_cursor") > 0
+
+
+def test_pinch_produces_a_click_through_the_whole_stack():
+    adapter, pipe = rig()
+    # Pinch, release, then wait out the double-click window.
+    run(pipe, [pose_pinch(gap=0.08)] * 5, start=0.0)
+    run(pipe, [pose_point()] * 4, start=0.3)
+    run(pipe, [pose_point()] * 2, start=1.2)
+    assert adapter.count("click") >= 1
+
+
+def test_peace_produces_a_right_click():
+    adapter, pipe = rig()
+    run(pipe, [pose_peace()] * 6)
+    right = [c for c in adapter.calls if c.action == "click" and c.args == ("right",)]
+    assert right
+
+
+def test_emergency_stop_releases_a_held_button():
+    """A stuck mouse button after an emergency stop would be dangerous."""
+    adapter, pipe = rig()
+    run(pipe, [pose_pinch(gap=0.08)] * 5)
+    run(pipe, [pose_pinch(gap=0.08)] * 12, start=0.3)  # long enough to hold
+    assert adapter.count("mouse_down") >= 1
+
+    pipe.engage_stop(StopReason.API, now=5.0)
+    assert adapter.count("mouse_up") >= 1
+
+
+def test_stopped_pipeline_sends_nothing_to_the_adapter():
+    adapter, pipe = rig()
+    pipe.engage_stop(StopReason.API, now=0.0)
+    adapter.clear()
+    run(pipe, [pose_point()] * 10, start=1.0)
+    assert adapter.actions() == []
+
+
+def test_motion_state_is_exposed():
+    adapter, pipe = rig()
+    state, _ = run(pipe, [pose_point()] * 4)
+    assert state.motion is not None
+
+
+def test_mode_change_clears_motion_history():
+    adapter, pipe = rig()
+    run(pipe, [pose_point(center=(0.3, 0.5))] * 4)
+    pipe.set_mode(Mode.BROWSER)
+    # A single frame far away must not complete the earlier motion.
+    state = pipe.process(
+        Frame(hands=(pose_point(center=(0.9, 0.5)),), timestamp=10.0)
+    )
+    assert state.motion.gesture is Gesture.NONE

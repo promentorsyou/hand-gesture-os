@@ -22,11 +22,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .calibration.calibrator import CalibrationProfile
+from .control.actions import ActionDispatcher, DispatchedAction
 from .control.cursor import CursorConfig, CursorController, CursorState
 from .control.safety import ConfirmationGate, EmergencyStop, StopReason
+from .gestures.compound import ClickEvent, CompoundConfig, CompoundDetector
 from .gestures.debounce import DebounceConfig, EventType, GestureDebouncer, GestureEvent
+from .gestures.motion import MotionConfig, MotionResult, MotionTracker
 from .gestures.recognizer import GestureRecognizer
 from .gestures.vocabulary import Gesture, Mode, gesture_allowed
+from .osadapter.base import OSAdapter
 from .types import Frame, Hand, Handedness
 
 
@@ -41,6 +45,8 @@ class TrackingHealth(str, Enum):
 class PipelineConfig:
     cursor: CursorConfig = field(default_factory=CursorConfig)
     debounce: DebounceConfig = field(default_factory=DebounceConfig)
+    motion: MotionConfig = field(default_factory=MotionConfig)
+    compound: CompoundConfig = field(default_factory=CompoundConfig)
     min_gesture_confidence: float = 0.55
     #: Frame brightness below which we warn and stop trusting tracking.
     low_light_threshold: float = 0.12
@@ -71,6 +77,12 @@ class PipelineState:
     #: Per-gesture scores, for the confidence readout in the UI.
     scores: dict[Gesture, float] = field(default_factory=dict)
     pending_confirmation: str | None = None
+    #: Resolved pointer intents (click, double-click, drag...) this frame.
+    clicks: list[ClickEvent] = field(default_factory=list)
+    #: Continuous motion output (scroll delta, zoom, rotation).
+    motion: MotionResult | None = None
+    #: What actually reached the OS adapter this frame.
+    dispatched: list[DispatchedAction] = field(default_factory=list)
 
 
 #: Gestures that drive the cursor. Everything else leaves it parked, so the
@@ -87,6 +99,7 @@ class GesturePipeline:
         self,
         config: PipelineConfig | None = None,
         profile: CalibrationProfile | None = None,
+        adapter: OSAdapter | None = None,
     ) -> None:
         self.config = config or PipelineConfig()
         self.profile = profile or CalibrationProfile()
@@ -101,6 +114,18 @@ class GesturePipeline:
         self.emergency_stop = EmergencyStop()
         self.confirmation = ConfirmationGate()
 
+        self.motion = MotionTracker(self.config.motion)
+        self.compound = CompoundDetector(self.config.compound)
+
+        # No adapter means simulation: the pipeline still resolves every
+        # intent, it just has nothing to drive.
+        self.adapter = adapter
+        self.dispatcher = (
+            ActionDispatcher(adapter, self.emergency_stop, self.confirmation)
+            if adapter is not None
+            else None
+        )
+
         self.mode: Mode = Mode.NAVIGATION
         self._last_hand_seen: float | None = None
         self._previous_mode: Mode = Mode.NAVIGATION
@@ -114,6 +139,8 @@ class GesturePipeline:
         self.mode = mode
         # Never carry a half-built gesture across a mode change.
         self.debouncer.reset()
+        self.motion.reset()
+        self.compound.reset()
 
     def toggle_pause(self) -> Mode:
         self.set_mode(self._previous_mode if self.mode is Mode.PAUSED else Mode.PAUSED)
@@ -121,13 +148,25 @@ class GesturePipeline:
 
     # --- Safety --------------------------------------------------------
     def engage_stop(self, reason: StopReason, now: float) -> None:
+        # Release any held mouse button *before* engaging: once the stop is
+        # engaged the dispatcher blocks everything, including the mouse-up
+        # that undoes a held button. Getting this order wrong leaves the
+        # button stuck down — the precise failure the stop exists to prevent.
+        if self.dispatcher is not None and not self.emergency_stop.engaged:
+            self.dispatcher.dispatch_clicks(self.compound.release(now))
+        else:
+            self.compound.reset()
+
         if self.emergency_stop.engage(reason, now):
             self.debouncer.reset()
             self.cursor.reset()
+            self.motion.reset()
 
     def release_stop(self) -> None:
         self.emergency_stop.release()
         self.debouncer.reset()
+        self.motion.reset()
+        self.compound.reset()
 
     # --- Main loop -----------------------------------------------------
     def process(self, frame: Frame) -> PipelineState:
@@ -157,11 +196,20 @@ class GesturePipeline:
                 # Release any in-flight gesture cleanly rather than leaving
                 # a drag or a mouse-down dangling.
                 state.events.extend(self.debouncer.update(Gesture.NONE, 0.0, now))
+                # Same hazard as the emergency stop: a drag interrupted by
+                # tracking loss must not leave the button held.
+                if self.dispatcher is not None:
+                    state.dispatched.extend(
+                        self.dispatcher.dispatch_clicks(self.compound.release(now))
+                    )
+                else:
+                    self.compound.reset()
                 if self.config.stop_on_hand_loss and was_active:
                     self.engage_stop(StopReason.TRACKING_LOST, now)
                     state.emergency_stopped = True
                     state.stop_reason = StopReason.TRACKING_LOST
                 self.cursor.reset()
+                self.motion.reset()
                 return state
 
         if health is TrackingHealth.LOW_LIGHT:
@@ -203,10 +251,33 @@ class GesturePipeline:
 
         # 7. Cursor.
         active = self.debouncer.active_gesture
+        hand = self._cursor_hand(frame)
         if gesture in _CURSOR_GESTURES or active in _CURSOR_GESTURES:
-            hand = self._cursor_hand(frame)
             if hand is not None:
                 state.cursor = self.cursor.update(hand.palm_center, now)
+
+        # 8. Motion gestures (swipe, scroll, zoom, rotate).
+        motion = self.motion.update(frame, active)
+        state.motion = motion
+
+        # 9. Compound pointer intents (click, double-click, hold, drag).
+        cursor_xy = (
+            (state.cursor.x, state.cursor.y) if state.cursor is not None else None
+        )
+        state.clicks = self.compound.update(
+            state.events,
+            now,
+            hand_position=hand.palm_center if hand is not None else None,
+            cursor=cursor_xy,
+        )
+
+        # 10. Dispatch to the OS. The dispatcher re-checks the emergency
+        # stop itself, so this stays safe even if the ordering above changes.
+        if self.dispatcher is not None:
+            if state.cursor is not None:
+                self.dispatcher.move_cursor(state.cursor.x, state.cursor.y)
+            state.dispatched.extend(self.dispatcher.dispatch_clicks(state.clicks))
+            state.dispatched.extend(self.dispatcher.dispatch_motion(motion, self.mode))
 
         pending = self.confirmation.pending
         state.pending_confirmation = pending.operation if pending else None
