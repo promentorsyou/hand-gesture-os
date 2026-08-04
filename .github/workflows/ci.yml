@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[server,dev]"
+
+      - name: Lint
+        run: python -m ruff check src/ tests/
+
+      - name: Test
+        # The suite needs no camera or display: hand poses are generated
+        # from a reference geometry, so recognition, debouncing, safety,
+        # cursor mapping and the WebSocket protocol all run headlessly.
+        run: python -m pytest -q
+
+      - name: Smoke-test the CLI
+        run: |
+          handgesture doctor
+          handgesture simulate
+
+      - name: Verify the server starts and serves the UI
+        run: |
+          handgesture serve --port 8765 --simulate &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8765/api/health && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8765/api/health
+          curl -sf -o /dev/null http://127.0.0.1:8765/
