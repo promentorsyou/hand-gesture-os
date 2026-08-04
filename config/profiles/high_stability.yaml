@@ -1,0 +1,14 @@
+# For tremor, low-light rooms, or anyone getting accidental clicks.
+# Longer holds and heavier smoothing: slower, but far fewer misfires.
+name: high_stability
+dominant_hand: right
+one_hand_mode: true
+pinch_threshold: 0.36          # must pinch more decisively
+extension_threshold: 0.55
+cursor_margin: 0.2
+cursor_gain: 0.7               # slower cursor
+debounce_hold_frames: 8        # ~0.25s hold before anything fires
+debounce_hold_seconds: 0.25
+debounce_cooldown_seconds: 0.6
+min_confidence: 0.7            # only very clear gestures count
+smoothing_min_cutoff: 0.6      # heavier smoothing

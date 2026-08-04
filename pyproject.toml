@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "handgesture"
+version = "0.1.0"
+description = "Control your computer entirely with webcam hand gestures"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+# The web UI and gesture server. Hand tracking itself runs in the browser,
+# so no vision dependency is needed on the Python side for the default setup.
+server = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pyyaml>=6.0",
+]
+
+# Optional: run MediaPipe in Python instead of the browser. Heavier, and
+# needs a working camera stack on the host.
+vision = [
+    "opencv-python>=4.9",
+    "mediapipe>=0.10",
+    "numpy>=1.24",
+]
+
+windows = ["pyautogui>=0.9.54", "pygetwindow>=0.0.9", "pycaw>=20230407", "comtypes>=1.2"]
+macos = ["pyautogui>=0.9.54", "pyobjc-framework-Quartz>=10.0"]
+linux = ["pyautogui>=0.9.54", "python-xlib>=0.33"]
+
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+handgesture = "handgesture.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+handgesture = ["server/static/*", "../../config/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

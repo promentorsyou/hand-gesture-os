@@ -1,0 +1,146 @@
+# Gesture configuration.
+#
+# Every mapping here is user-editable. Copy this file, adjust, and pass it
+# with `handgesture serve --config path/to/your.yaml`.
+
+version: 1
+
+# --- Recognition tuning ---------------------------------------------------
+recognition:
+  # Minimum score before a gesture is considered at all. Raise if you get
+  # false positives; lower if gestures feel unresponsive.
+  min_confidence: 0.55
+
+  # Pinch is measured thumb-tip to index-tip, normalised by palm span, so it
+  # behaves the same near and far from the camera. Calibration overrides this.
+  pinch_threshold: 0.42
+
+  # Finger extension value separating "curled" from "extended".
+  extension_threshold: 0.5
+
+# --- Debouncing: the accidental-action guard ------------------------------
+debounce:
+  # A gesture must hold this many consecutive frames before it fires.
+  hold_frames: 3
+  # ...and at least this long in wall-clock seconds. Both must pass, so a
+  # high-framerate camera cannot fire instantly.
+  hold_seconds: 0.08
+  # Lockout after a gesture ends before the same one may fire again.
+  cooldown_seconds: 0.35
+  # Frames below this confidence are ignored entirely — they neither confirm
+  # a gesture nor break an in-progress hold.
+  min_confidence: 0.55
+  # How long a gesture may vanish without cancelling an active hold. Covers
+  # single dropped frames from the tracker.
+  dropout_grace_seconds: 0.12
+
+# --- Cursor ---------------------------------------------------------------
+cursor:
+  # Fraction of the frame inset on each side. The remaining middle region
+  # maps to the whole screen, so you never push your hand out of view to
+  # reach a screen corner.
+  margin: 0.15
+  gain: 1.0
+  acceleration: 0.6
+  precision_scale: 0.35
+  smoothing_min_cutoff: 1.2
+  smoothing_beta: 0.012
+  # Mirror horizontally to match a mirrored self-view.
+  mirror_x: true
+
+# --- Tracking health ------------------------------------------------------
+tracking:
+  low_light_threshold: 0.12
+  hand_loss_seconds: 0.5
+  # Trip the emergency stop if tracking is lost mid-gesture, so a drag is
+  # never dropped somewhere random.
+  stop_on_hand_loss: true
+  dominant_hand: right
+  one_hand_mode: false
+
+# --- Gesture -> action bindings -------------------------------------------
+# Actions are resolved per mode. A gesture with no binding in the active
+# mode does nothing.
+bindings:
+  navigation:
+    point: cursor.move
+    pinch: mouse.click_left
+    double_pinch: mouse.double_click
+    pinch_hold: mouse.hold_left
+    pinch_drag: mouse.drag
+    peace: mouse.click_right
+    fist: object.grab
+    scroll_vertical: scroll.vertical
+    scroll_horizontal: scroll.horizontal
+    swipe_left: nav.back
+    swipe_right: nav.forward
+    swipe_up: system.multitask
+    swipe_down: window.minimize
+    spread: view.zoom_in
+    converge: view.zoom_out
+    palm_forward: system.home
+    open_palm: mode.pause
+    frame: system.screenshot
+    crossed_hands: system.emergency_stop
+
+  browser:
+    point: cursor.move
+    pinch: mouse.click_left
+    peace: mouse.click_right
+    scroll_vertical: scroll.vertical
+    swipe_left: browser.back
+    swipe_right: browser.forward
+    spread: browser.zoom_in
+    converge: browser.zoom_out
+    open_palm: mode.pause
+    crossed_hands: system.emergency_stop
+
+  media:
+    pinch: media.play_pause
+    swipe_left: media.previous
+    swipe_right: media.next
+    rotate: media.volume
+    open_palm: mode.pause
+    crossed_hands: system.emergency_stop
+
+  window:
+    fist: window.grab
+    pinch_drag: window.move
+    spread: window.maximize
+    converge: window.restore
+    swipe_down: window.minimize
+    open_palm: mode.pause
+    crossed_hands: system.emergency_stop
+
+  file:
+    point: cursor.move
+    pinch: file.select
+    double_pinch: file.open
+    peace: file.context_menu
+    pinch_drag: file.move
+    open_palm: mode.pause
+    crossed_hands: system.emergency_stop
+
+  typing:
+    point: keyboard.hover_key
+    pinch: keyboard.press_key
+    open_palm: mode.pause
+    crossed_hands: system.emergency_stop
+
+# --- Operations requiring explicit confirmation ---------------------------
+# These never execute straight from a gesture. They raise a confirmation
+# panel with hand-controlled Confirm and Cancel.
+confirmations:
+  critical:      # long deliberate hold
+    - file.delete
+    - file.move_permanent
+    - purchase.make
+    - software.install
+    - terminal.run
+    - password.enter
+    - system.shutdown
+    - system.restart
+  confirm:       # short hold
+    - message.send
+    - form.submit
+    - window.close_unsaved

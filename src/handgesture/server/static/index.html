@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>hand-gesture-os — Phase 1</title>
+<style>
+  :root {
+    --bg: #0a0b0d;
+    --panel: rgba(18, 20, 24, 0.82);
+    --ink: #e9edf2;
+    --dim: rgba(233, 237, 242, 0.5);
+    --line: rgba(233, 237, 242, 0.12);
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #stage { position: fixed; inset: 0; }
+  #video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #video { object-fit: cover; transform: scaleX(-1); }
+  #overlay { pointer-events: none; }
+
+  .hud { position: fixed; z-index: 10; }
+
+  .brand {
+    top: 20px; left: 24px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .brand .mark {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    display: grid; place-items: center; font-size: 14px;
+  }
+  .brand h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .brand small { display: block; font-size: 10.5px; color: var(--dim); font-weight: 400; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 14px;
+    backdrop-filter: blur(14px);
+  }
+
+  .status { top: 20px; right: 24px; width: 232px; }
+  .row {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11.5px; padding: 3px 0;
+  }
+  .row .k { color: var(--dim); }
+  .row .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .bar { height: 3px; background: rgba(255,255,255,0.09); border-radius: 2px; overflow: hidden; margin-top: 3px; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0%; transition: width 90ms linear; }
+
+  .gesture-big {
+    font-size: 19px; font-weight: 700; letter-spacing: -0.02em;
+    text-transform: capitalize; margin: 2px 0 6px;
+  }
+
+  .modes { bottom: 20px; left: 24px; display: flex; gap: 6px; flex-wrap: wrap; max-width: 60vw; }
+  .modes button {
+    background: rgba(255,255,255,0.05); border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 10.5px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 7px 11px; border-radius: 7px; cursor: pointer;
+  }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: #08111f; border-color: transparent; }
+
+  .actions { bottom: 20px; right: 24px; display: flex; gap: 8px; }
+  .actions button {
+    background: rgba(255,255,255,0.05); border: 1px solid var(--line);
+    color: var(--ink); font: inherit; font-size: 11px; font-weight: 500;
+    padding: 9px 14px; border-radius: 8px; cursor: pointer;
+  }
+  .actions button.danger { background: var(--bad); color: #2b0707; border-color: transparent; font-weight: 700; }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+
+  #cursor {
+    position: fixed; z-index: 9; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+    border: 2px solid var(--accent); border-radius: 50%;
+    box-shadow: 0 0 14px rgba(96,165,250,0.65); pointer-events: none;
+    transition: opacity 180ms ease; opacity: 0;
+  }
+  #cursor.on { opacity: 1; }
+  #cursor.pinching { background: var(--accent); }
+
+  #banner {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    place-items: center; background: rgba(120, 12, 12, 0.34);
+    backdrop-filter: blur(3px);
+  }
+  #banner.on { display: grid; }
+  #banner .box { text-align: center; padding: 26px 34px; }
+  #banner h2 { margin: 0 0 6px; font-size: 21px; }
+  #banner p { margin: 0 0 16px; color: var(--dim); font-size: 12.5px; }
+
+  #boot {
+    position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+    background: var(--bg); text-align: center; padding: 24px;
+    transition: opacity 400ms ease;
+  }
+  #boot.gone { opacity: 0; pointer-events: none; }
+  #boot h2 { font-size: 20px; margin: 0 0 8px; font-weight: 650; }
+  #boot p { color: var(--dim); font-size: 12.5px; max-width: 40ch; line-height: 1.65; margin: 0 auto 20px; }
+  #boot button {
+    background: var(--accent); color: #08111f; border: 0; font: inherit;
+    font-weight: 650; font-size: 13px; padding: 11px 24px; border-radius: 9px; cursor: pointer;
+  }
+  code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+</div>
+<div id="cursor"></div>
+
+<div class="hud brand">
+  <div class="mark">◈</div>
+  <div>
+    <h1>hand-gesture-os</h1>
+    <small>Phase 1 · tracking &amp; recognition</small>
+  </div>
+</div>
+
+<div class="hud status panel">
+  <div class="gesture-big" id="gestureName">—</div>
+  <div class="bar"><i id="confBar"></i></div>
+  <div style="height:8px"></div>
+  <div class="row"><span class="k">Confidence</span><span class="v" id="confVal">0%</span></div>
+  <div class="row"><span class="k">Mode</span><span class="v" id="modeVal">navigation</span></div>
+  <div class="row"><span class="k">Hands</span><span class="v" id="handsVal">0</span></div>
+  <div class="row"><span class="k">Tracking</span><span class="v" id="healthVal"><span class="dot bad"></span>none</span></div>
+  <div class="row"><span class="k">Server</span><span class="v" id="wsVal"><span class="dot bad"></span>offline</span></div>
+  <div class="row"><span class="k">FPS</span><span class="v" id="fpsVal">0</span></div>
+  <div class="row"><span class="k">Cursor</span><span class="v" id="curVal">—</span></div>
+</div>
+
+<div class="hud modes" id="modes"></div>
+
+<div class="hud actions">
+  <button id="calibrateBtn">Calibrate</button>
+  <button id="landmarkBtn" aria-pressed="true">Landmarks</button>
+  <button id="stopBtn" class="danger">Emergency stop</button>
+</div>
+
+<div id="banner">
+  <div class="box panel">
+    <h2>Gesture input disabled</h2>
+    <p id="stopReason">Emergency stop engaged.</p>
+    <button id="resumeBtn" style="background:var(--ok);color:#052e16;border:0;font:inherit;font-weight:650;padding:10px 20px;border-radius:8px;cursor:pointer">Resume</button>
+  </div>
+</div>
+
+<div id="boot">
+  <div>
+    <h2>Allow camera access</h2>
+    <p>
+      Hand tracking runs entirely in your browser — video never leaves this
+      page. Landmarks are sent to the local server for gesture recognition.
+      Press <code>Esc</code> at any time for an emergency stop.
+    </p>
+    <button id="startBtn">Start tracking</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+
+<script>
+(() => {
+  "use strict";
+
+  const MODES = ["navigation", "typing", "media", "window", "file", "browser", "precision", "paused"];
+
+  // MediaPipe's hand skeleton, as index pairs.
+  const BONES = [
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [5,9],[9,10],[10,11],[11,12],
+    [9,13],[13,14],[14,15],[15,16],
+    [13,17],[17,18],[18,19],[19,20],[0,17],
+  ];
+
+  const video = document.getElementById("video");
+  const overlay = document.getElementById("overlay");
+  const ctx = overlay.getContext("2d");
+  const cursorEl = document.getElementById("cursor");
+  const banner = document.getElementById("banner");
+
+  const el = (id) => document.getElementById(id);
+  let showLandmarks = true;
+  let socket = null;
+  let latest = null;
+  let lastFrameTimes = [];
+
+  /* ---------------- WebSocket ---------------- */
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(`${proto}://${location.host}/ws`);
+
+    socket.onopen = () => setDot("wsVal", "ok", "connected");
+    socket.onclose = () => {
+      setDot("wsVal", "bad", "offline");
+      // Keep retrying: the server restarting shouldn't require a reload.
+      setTimeout(connect, 1500);
+    };
+    socket.onerror = () => setDot("wsVal", "bad", "error");
+    socket.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === "state") applyState(msg);
+      else if (msg.type === "calibration") applyCalibration(msg);
+    };
+  }
+
+  function send(obj) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(obj));
+    }
+  }
+
+  function command(command, extra = {}) {
+    send({ type: "command", command, timestamp: performance.now() / 1000, ...extra });
+  }
+
+  /* ---------------- UI updates ---------------- */
+
+  function setDot(id, cls, text) {
+    el(id).innerHTML = `<span class="dot ${cls}"></span>${text}`;
+  }
+
+  const HEALTH_CLASS = { ok: "ok", no_hands: "bad", low_confidence: "warn", low_light: "warn" };
+
+  function applyState(s) {
+    latest = s;
+    el("gestureName").textContent = s.gesture === "none" ? "—" : s.gesture.replace(/_/g, " ");
+    el("confVal").textContent = Math.round((s.confidence || 0) * 100) + "%";
+    el("confBar").style.width = Math.round((s.confidence || 0) * 100) + "%";
+    el("modeVal").textContent = s.mode;
+    el("handsVal").textContent = s.handCount;
+    setDot("healthVal", HEALTH_CLASS[s.health] || "warn", s.health.replace(/_/g, " "));
+
+    for (const btn of document.querySelectorAll("#modes button")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.mode === s.mode));
+    }
+
+    banner.classList.toggle("on", !!s.emergencyStopped);
+    if (s.emergencyStopped && s.stopReason) {
+      el("stopReason").textContent = `Stopped by: ${s.stopReason.replace(/_/g, " ")}.`;
+    }
+
+    if (s.cursor) {
+      // Server coordinates are in screen space; map to this window for the
+      // Phase 1 simulated pointer.
+      const x = (s.cursor.x / (window.__screenW || 1920)) * window.innerWidth;
+      const y = (s.cursor.y / (window.__screenH || 1080)) * window.innerHeight;
+      cursorEl.style.left = x + "px";
+      cursorEl.style.top = y + "px";
+      cursorEl.classList.add("on");
+      cursorEl.classList.toggle("pinching", s.gesture === "pinch");
+      el("curVal").textContent = `${Math.round(s.cursor.x)}, ${Math.round(s.cursor.y)}`;
+    } else {
+      cursorEl.classList.remove("on");
+      el("curVal").textContent = "—";
+    }
+  }
+
+  function applyCalibration(msg) {
+    el("gestureName").textContent = "Calibrating";
+    el("confBar").style.width = Math.round(msg.progress * 100) + "%";
+    el("confVal").textContent = Math.round(msg.progress * 100) + "%";
+    el("modeVal").textContent = msg.step.replace(/_/g, " ");
+    el("curVal").textContent = msg.prompt ? msg.prompt.slice(0, 22) : "—";
+    if (msg.complete) el("gestureName").textContent = "Calibrated";
+  }
+
+  /* ---------------- Drawing ---------------- */
+
+  function resize() {
+    overlay.width = window.innerWidth;
+    overlay.height = window.innerHeight;
+  }
+
+  function drawHands(hands) {
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (!showLandmarks || !hands) return;
+
+    const W = overlay.width, H = overlay.height;
+    for (const lm of hands) {
+      // Mirror x to match the flipped self-view.
+      const pt = (i) => [(1 - lm[i].x) * W, lm[i].y * H];
+
+      ctx.strokeStyle = "rgba(96,165,250,0.75)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (const [a, b] of BONES) {
+        const [ax, ay] = pt(a), [bx, by] = pt(b);
+        ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+      }
+      ctx.stroke();
+
+      for (let i = 0; i < lm.length; i++) {
+        const [x, y] = pt(i);
+        // Fingertips larger — they carry the gestures.
+        const tip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
+        ctx.fillStyle = tip ? "#a78bfa" : "rgba(233,237,242,0.85)";
+        ctx.beginPath();
+        ctx.arc(x, y, tip ? 5 : 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  function trackFps() {
+    const now = performance.now();
+    lastFrameTimes.push(now);
+    while (lastFrameTimes.length && now - lastFrameTimes[0] > 1000) lastFrameTimes.shift();
+    el("fpsVal").textContent = lastFrameTimes.length;
+  }
+
+  /* ---------------- MediaPipe ---------------- */
+
+  function onResults(res) {
+    trackFps();
+    const hands = res.multiHandLandmarks || [];
+    drawHands(hands);
+
+    send({
+      type: "frame",
+      timestamp: performance.now() / 1000,
+      width: video.videoWidth || 640,
+      height: video.videoHeight || 480,
+      hands: hands.map((lm, i) => ({
+        handedness: (res.multiHandedness?.[i]?.label || "unknown").toLowerCase(),
+        confidence: res.multiHandedness?.[i]?.score ?? 1.0,
+        landmarks: lm.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 })),
+      })),
+    });
+  }
+
+  async function start() {
+    el("boot").classList.add("gone");
+    if (typeof Hands === "undefined") {
+      el("gestureName").textContent = "Model failed";
+      return;
+    }
+
+    const hands = new Hands({
+      locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`,
+    });
+    hands.setOptions({
+      maxNumHands: 2, modelComplexity: 1,
+      minDetectionConfidence: 0.6, minTrackingConfidence: 0.6,
+    });
+    hands.onResults(onResults);
+
+    try {
+      const cam = new Camera(video, {
+        onFrame: async () => { await hands.send({ image: video }); },
+        width: 640, height: 480,
+      });
+      await cam.start();
+    } catch (err) {
+      console.error(err);
+      el("gestureName").textContent = "Camera blocked";
+    }
+  }
+
+  /* ---------------- Wiring ---------------- */
+
+  const modesEl = el("modes");
+  for (const mode of MODES) {
+    const b = document.createElement("button");
+    b.textContent = mode;
+    b.dataset.mode = mode;
+    b.setAttribute("aria-pressed", String(mode === "navigation"));
+    b.onclick = () => command("set_mode", { mode });
+    modesEl.appendChild(b);
+  }
+
+  el("stopBtn").onclick = () => command("emergency_stop");
+  el("resumeBtn").onclick = () => command("release_stop");
+  el("calibrateBtn").onclick = () => command("start_calibration");
+  el("landmarkBtn").onclick = (e) => {
+    showLandmarks = !showLandmarks;
+    e.currentTarget.setAttribute("aria-pressed", String(showLandmarks));
+  };
+
+  // Keyboard fallbacks — development and emergency use only, per the brief.
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") command("emergency_stop");
+    if (e.key === " ") { e.preventDefault(); command("release_stop"); }
+  });
+
+  el("startBtn").addEventListener("click", start, { once: true });
+  window.addEventListener("resize", resize);
+
+  fetch("/api/health")
+    .then((r) => r.json())
+    .then((h) => { console.log("adapter:", h.adapter, h.capabilities); })
+    .catch(() => {});
+
+  resize();
+  connect();
+})();
+</script>
+</body>
+</html>
