@@ -161,6 +161,30 @@
     opacity: 0; transition: opacity .2s ease;
   }
   #badge.on { opacity: 1; }
+
+  /* ---- Phase 4: applications ---- */
+  .win .body { padding: 0; opacity: 1; overflow: auto; height: calc(100% - 30px); }
+  .applist { list-style: none; margin: 0; padding: 6px; font-size: 12px; }
+  .applist li {
+    padding: 5px 8px; border-radius: 6px; display: flex; gap: 8px;
+    align-items: center; justify-content: space-between;
+  }
+  .applist li.on { background: rgba(120,180,255,0.16); }
+  .applist .muted { opacity: .5; font-size: 11px; }
+  .approw { padding: 8px 10px; font-size: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .approw b { font-weight: 650; }
+  .kbd { position: relative; width: 100%; height: 100%; }
+  .kbd .key {
+    position: absolute; display: flex; align-items: center; justify-content: center;
+    border-radius: 6px; background: rgba(255,255,255,0.09); font-size: 12px;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .kbd .key.hover { background: rgba(120,180,255,0.35); border-color: rgba(120,180,255,0.7); }
+  .kbd .buffer {
+    position: absolute; left: 0; right: 0; top: -26px; height: 22px;
+    padding: 0 8px; font-size: 12px; white-space: pre; overflow: hidden;
+    background: rgba(0,0,0,0.35); border-radius: 6px; display: flex; align-items: center;
+  }
 </style>
 </head>
 <body>
@@ -179,7 +203,7 @@
   <div class="mark">◈</div>
   <div>
     <h1>hand-gesture-os</h1>
-    <small>Phase 3 · spatial interface</small>
+    <small>Phase 4 · applications</small>
   </div>
 </div>
 
@@ -287,6 +311,10 @@
   function command(command, extra = {}) {
     send({ type: "command", command, timestamp: performance.now() / 1000, ...extra });
   }
+  // Exposed so the browser test harness (and the console) can drive the
+  // session over the *page's own* socket. Each connection gets its own
+  // server-side session, so a second socket would not touch this workspace.
+  window.__command = command;
 
   /* ---------------- UI updates ---------------- */
 
@@ -359,6 +387,8 @@
 
   function renderWorkspace(ws) {
     if (!ws) return;
+    // Kept for the UI controls (and for tests) to look up window ids.
+    window.__lastWorkspace = ws;
     const layer = el("spatial");
     layer.innerHTML = "";
     // Windows arrive back to front, so DOM order is already paint order.
@@ -376,7 +406,9 @@
       node.innerHTML =
         `<div class="bar"><b>${w.title}</b>` +
         (w.unsaved ? `<span class="unsaved">• unsaved</span>` : "") +
-        `</div><div class="body">${w.app}</div>` +
+        `</div><div class="body">` +
+        (w.id === ws.focused ? renderApp(ws.app) || esc(w.app) : esc(w.app)) +
+        `</div>` +
         (w.state === "maximized" ? "" : `<div class="corner"></div>`);
       layer.appendChild(node);
     }
@@ -409,12 +441,12 @@
         `</div>`;
     } else {
       shade.innerHTML = `<h2>Home</h2><div class="grid">` +
-        ["files", "browser", "music", "photos", "settings"].map((app) =>
+        DEMO_APPS.map((app) =>
           `<div class="card"><b>${app}</b></div>`).join("") + `</div>`;
     }
   }
 
-  const DEMO_APPS = ["files", "browser", "music", "photos", "settings"];
+  const DEMO_APPS = ["files", "browser", "music", "photos", "settings", "keyboard", "video"];
   let demoIndex = 0;
 
   function openDemoApp() {
@@ -431,6 +463,86 @@
         badge(a.name.replace(/_/g, " ") + (a.detail ? ` · ${a.detail}` : ""));
       }
     }
+  }
+
+
+  /* ---------------- Phase 4: app content ---------------- */
+  //
+  // Only the focused window's app state is sent (a keyboard ships its whole
+  // layout, which is too much to send for every window every frame), so
+  // unfocused windows show their name and nothing else.
+
+  function renderApp(app) {
+    if (!app) return "";
+    const s = app.state;
+    if (app.name === "keyboard") return renderKeyboard(s);
+    if (app.name === "files") return renderFiles(s);
+    if (app.name === "music" || app.name === "video") return renderMedia(s);
+    if (app.name === "browser") return renderBrowser(s);
+    if (app.name === "photos") return renderPhotos(s);
+    if (app.name === "settings") return renderSettings(s);
+    return "";
+  }
+
+  function esc(text) {
+    return String(text).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  function renderKeyboard(s) {
+    const keys = s.keys.map((k) =>
+      `<div class="key${k.label === s.hover ? " hover" : ""}" style="left:${k.x * 100}%;` +
+      `top:${k.y * 100}%;width:${k.w * 100}%;height:${k.h * 100}%">${esc(k.label)}</div>`
+    ).join("");
+    return `<div class="kbd"><div class="buffer">${esc(s.buffer) || "&nbsp;"}</div>${keys}</div>`;
+  }
+
+  function renderFiles(s) {
+    if (s.error) return `<div class="approw">${esc(s.error)}</div>`;
+    const rows = s.entries.map((e) =>
+      `<li class="${s.selection.includes(e.name) ? "on" : ""}">` +
+      `<span>${e.isDir ? "▸ " : ""}${esc(e.name)}</span>` +
+      `<span class="muted">${e.isDir ? "" : e.size + " B"}</span></li>`
+    ).join("");
+    return `<div class="approw"><b>${esc(s.cwd)}</b></div><ul class="applist">${rows}</ul>`;
+  }
+
+  function renderMedia(s) {
+    const rows = s.tracks.map((t, i) =>
+      `<li class="${i === s.index ? "on" : ""}"><span>${esc(t.title)}</span>` +
+      `<span class="muted">${esc(t.artist)}</span></li>`
+    ).join("");
+    return `<div class="approw"><b>${s.playing ? "▶" : "❚❚"}</b>` +
+      `<span>${esc(s.current ? s.current.title : "—")}</span>` +
+      `<span class="muted">vol ${Math.round(s.volume * 100)}% · repeat ${s.repeat}` +
+      `${s.shuffle ? " · shuffle" : ""}</span></div><ul class="applist">${rows}</ul>`;
+  }
+
+  function renderBrowser(s) {
+    const tabs = s.tabs.map((t, i) =>
+      `<li class="${i === s.index ? "on" : ""}"><span>${esc(t.title)}</span>` +
+      `<span class="muted">${esc(t.url)}</span></li>`
+    ).join("");
+    return `<div class="approw"><b>${esc(s.url)}</b>` +
+      `<span class="muted">${s.canGoBack ? "◀" : ""} ${s.canGoForward ? "▶" : ""}</span>` +
+      `</div><ul class="applist">${tabs}</ul>`;
+  }
+
+  function renderPhotos(s) {
+    const rows = s.images.map((im, i) =>
+      `<li class="${i === s.index ? "on" : ""}"><span>${esc(im.name)}</span>` +
+      `<span class="muted">${im.width}×${im.height}</span></li>`
+    ).join("");
+    return `<div class="approw"><b>${s.zoom}x</b><span class="muted">` +
+      `rotation ${s.rotation}° · pan ${s.pan[0]}, ${s.pan[1]}</span></div>` +
+      `<ul class="applist">${rows}</ul>`;
+  }
+
+  function renderSettings(s) {
+    const rows = s.schema.map((item) =>
+      `<li><span>${esc(item.label)}</span>` +
+      `<span class="muted">${esc(s.values[item.key])}</span></li>`
+    ).join("");
+    return `<ul class="applist">${rows}</ul>`;
   }
 
   /* ---------------- Drawing ---------------- */

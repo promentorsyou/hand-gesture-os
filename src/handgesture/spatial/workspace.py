@@ -23,6 +23,7 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 
+from ..apps.base import App, create_app
 from ..types import Point
 from .window import (
     MIN_HEIGHT,
@@ -105,6 +106,10 @@ class Workspace:
             "notifications": True,
             "mirror_view": True,
         }
+        #: Running app instances, keyed by window id. A window whose app
+        #: name is not registered simply has no instance — the spatial
+        #: layer still works, it just has nothing to put inside.
+        self.apps: dict[int, App] = {}
         self._focus_id: int | None = None
         self._z = 0
         self._opened = 0
@@ -113,15 +118,23 @@ class Workspace:
     # --- Window lifecycle ----------------------------------------------
 
     def open(self, app: str, *, title: str = "", rect: Rect | None = None,
-             unsaved: bool = False) -> Window:
+             unsaved: bool = False, app_kwargs: dict | None = None) -> Window:
         """Open a window and give it focus."""
         if rect is None:
             step = (self._opened % _CASCADE_WRAP) * _CASCADE
             rect = Rect(0.12 + step, 0.10 + step, 0.42, 0.40)
         self._opened += 1
         self._z += 1
-        window = Window(app=app, title=title, rect=rect.clamped(), z=self._z,
-                        unsaved=unsaved)
+        instance = create_app(app, **(app_kwargs or {}))
+        window = Window(
+            app=app,
+            title=title or (instance.title if instance else ""),
+            rect=rect.clamped(),
+            z=self._z,
+            unsaved=unsaved,
+        )
+        if instance is not None:
+            self.apps[window.id] = instance
         self.windows.append(window)
         self._focus_id = window.id
         self.overlay = Overlay.NONE
@@ -157,12 +170,17 @@ class Workspace:
         if self._grab is not None and self._grab.window_id == window_id:
             self._grab = None
         self.windows.remove(window)
+        self.apps.pop(window_id, None)
         if self._focus_id == window_id:
             self._focus_id = None
             top = self.top_window()
             if top is not None:
                 self._focus_id = top.id
         return True
+
+    def app_for(self, window_id: int) -> App | None:
+        """The running app instance in a window, if it has one."""
+        return self.apps.get(window_id)
 
     # --- Focus and ordering --------------------------------------------
 
@@ -418,6 +436,14 @@ class Workspace:
                 {"app": n.app, "title": n.title, "body": n.body, "read": n.read}
                 for n in self.notifications
             ],
+            "app": (
+                {
+                    "name": self.apps[self._focus_id].name,
+                    "state": self.apps[self._focus_id].state(),
+                }
+                if self._focus_id in self.apps
+                else None
+            ),
             "unread": self.unread_count,
             "quick_settings": dict(self.quick_settings),
         }

@@ -160,12 +160,22 @@ fastapi = pytest.importorskip("fastapi", reason="server extra not installed")
 
 
 @pytest.fixture
-def client():
+def adapter():
+    """The recording adapter the app under test drives.
+
+    Shared by every session in one app, which is what lets a test assert on
+    what actually reached the OS layer.
+    """
+    return NullAdapter()
+
+
+@pytest.fixture
+def client(adapter):
     from fastapi.testclient import TestClient
 
     from handgesture.server.app import create_app
 
-    return TestClient(create_app(NullAdapter()))
+    return TestClient(create_app(adapter))
 
 
 def test_health_endpoint(client):
@@ -304,3 +314,132 @@ def test_frames_carry_the_workspace_snapshot(client):
         reply = ws.receive_json()
         assert reply["type"] == "state"
         assert len(reply["spatial"]["windows"]) == 1
+
+
+# --- Phase 4: apps over the wire -------------------------------------------
+
+
+def test_list_apps(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "list_apps"})
+        apps = ws.receive_json()["apps"]
+        assert "keyboard" in apps and "files" in apps
+
+
+def test_app_action_reaches_the_app_in_a_window(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "music"})
+        window_id = ws.receive_json()["windowId"]
+
+        ws.send_json({
+            "type": "command", "command": "app_action",
+            "windowId": window_id, "action": "next",
+        })
+        reply = ws.receive_json()
+        assert reply["type"] == "app"
+        assert reply["ok"] is True
+        assert reply["state"]["index"] == 1
+
+
+def test_app_action_on_a_window_with_no_app_errors(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "app_action",
+                      "windowId": 99999, "action": "next"})
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_an_unknown_app_action_reports_failure_without_dropping_the_socket(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "music"})
+        window_id = ws.receive_json()["windowId"]
+        ws.send_json({"type": "command", "command": "app_action",
+                      "windowId": window_id, "action": "explode"})
+        reply = ws.receive_json()
+        assert reply["ok"] is False
+        # Socket still usable.
+        ws.send_json({"type": "command", "command": "list_apps"})
+        assert ws.receive_json()["type"] == "apps"
+
+
+def test_an_app_os_request_reaches_the_adapter(client, adapter):
+    """Media keys must actually get as far as the OS adapter."""
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "music"})
+        window_id = ws.receive_json()["windowId"]
+        adapter.clear()
+        ws.send_json({"type": "command", "command": "app_action",
+                      "windowId": window_id, "action": "play"})
+        reply = ws.receive_json()
+        assert reply["dispatched"][0]["executed"] is True
+        assert "media_key" in adapter.actions()
+
+
+def test_a_destructive_file_operation_waits_for_confirmation(client, adapter, tmp_path):
+    """The whole safety chain, over the wire: request, gate, confirm, execute."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("x")
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "files",
+                      "appKwargs": {"root": str(tmp_path)}})
+        window_id = ws.receive_json()["windowId"]
+
+        ws.send_json({"type": "command", "command": "app_action",
+                      "windowId": window_id, "action": "select",
+                      "args": {"name": "victim.txt"}})
+        ws.receive_json()
+
+        ws.send_json({"type": "command", "command": "app_action",
+                      "windowId": window_id, "action": "delete"})
+        reply = ws.receive_json()
+        assert reply["dispatched"][0]["awaitingConfirmation"] is True
+        assert reply["pendingConfirmation"] == "file.delete"
+        assert victim.exists(), "nothing may be deleted before confirmation"
+
+        # A confirm that is not held long enough must not go through.
+        ws.send_json({"type": "command", "command": "confirm",
+                      "timestamp": 1.0, "heldSeconds": 0.01})
+        assert ws.receive_json()["type"] == "error"
+        assert victim.exists()
+
+        ws.send_json({"type": "command", "command": "confirm",
+                      "timestamp": 1.0, "heldSeconds": 5.0})
+        reply = ws.receive_json()
+        assert reply["type"] == "confirmed"
+        assert not victim.exists()
+
+
+def test_a_cancelled_file_operation_never_runs(client, tmp_path):
+    keeper = tmp_path / "keeper.txt"
+    keeper.write_text("x")
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "files",
+                      "appKwargs": {"root": str(tmp_path)}})
+        window_id = ws.receive_json()["windowId"]
+        ws.send_json({"type": "command", "command": "app_action",
+                      "windowId": window_id, "action": "select",
+                      "args": {"name": "keeper.txt"}})
+        ws.receive_json()
+        ws.send_json({"type": "command", "command": "app_action",
+                      "windowId": window_id, "action": "delete"})
+        ws.receive_json()
+
+        ws.send_json({"type": "command", "command": "cancel_confirmation"})
+        assert ws.receive_json()["operation"] == "file.delete"
+        assert keeper.exists()
+
+
+def test_the_emergency_stop_blocks_app_os_effects(client, adapter):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "music"})
+        window_id = ws.receive_json()["windowId"]
+        ws.send_json({"type": "command", "command": "emergency_stop"})
+        ws.receive_json()
+
+        adapter.clear()
+        ws.send_json({"type": "command", "command": "app_action",
+                      "windowId": window_id, "action": "play"})
+        reply = ws.receive_json()
+        assert reply["dispatched"][0]["executed"] is False
+        assert adapter.actions() == []

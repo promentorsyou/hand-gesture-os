@@ -66,6 +66,10 @@ class PipelineState:
     """Everything the UI needs to render one frame of feedback."""
 
     mode: Mode = Mode.NAVIGATION
+    #: The timestamp of the frame this state came from. Carried through so
+    #: downstream consumers (the keyboard's dwell timer) stay driven by
+    #: frame time rather than the wall clock, and stay testable.
+    timestamp: float = 0.0
     gesture: Gesture = Gesture.NONE
     confidence: float = 0.0
     health: TrackingHealth = TrackingHealth.NO_HANDS
@@ -171,7 +175,9 @@ class GesturePipeline:
     # --- Main loop -----------------------------------------------------
     def process(self, frame: Frame) -> PipelineState:
         now = frame.timestamp
-        state = PipelineState(mode=self.mode, hand_count=frame.hand_count)
+        state = PipelineState(
+            mode=self.mode, timestamp=now, hand_count=frame.hand_count
+        )
 
         # 1. Emergency stop wins over everything.
         if self.emergency_stop.engaged:

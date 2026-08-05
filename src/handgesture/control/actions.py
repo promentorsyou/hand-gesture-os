@@ -14,6 +14,7 @@ Two rules hold everywhere in here:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +65,16 @@ class ActionDispatcher:
         self.emergency_stop = emergency_stop
         self.confirmation = confirmation
         self.history: list[DispatchedAction] = []
+        #: Operations owned by something above this layer (an app, say),
+        #: registered here so they still pass through the confirmation gate
+        #: and the emergency stop instead of inventing a second path.
+        self.extra_handlers: dict[str, Callable[[dict[str, Any]], str]] = {}
+
+    def register_operation(
+        self, operation: str, handler: Callable[[dict[str, Any]], str]
+    ) -> None:
+        """Route ``operation`` to ``handler``. The handler returns a detail string."""
+        self.extra_handlers[operation] = handler
 
     def _record(self, action: DispatchedAction) -> DispatchedAction:
         self.history.append(action)
@@ -254,7 +265,20 @@ class ActionDispatcher:
 
     def _execute(self, operation: str, payload: dict[str, Any]) -> DispatchedAction:
         """Perform a (already-authorised) named operation."""
+        extra = self.extra_handlers.get(operation)
+        if extra is not None:
+            try:
+                detail = extra(payload)
+            except NotImplementedError as exc:
+                return self._record(DispatchedAction(operation, str(exc), executed=False))
+            return self._record(DispatchedAction(operation, detail))
+
         handlers = {
+            "keyboard.type": lambda: self.adapter.type_text(str(payload.get("text", ""))),
+            "keyboard.chord": lambda: self.adapter.press_keys(*payload.get("keys", [])),
+            "audio.set_volume": lambda: self.adapter.set_volume(
+                float(payload.get("level", 0.0))
+            ),
             "system.screenshot": lambda: self.adapter.screenshot(payload.get("path")),
             "system.lock": self.adapter.lock_screen,
             "media.play_pause": lambda: self.adapter.media_key("play_pause"),

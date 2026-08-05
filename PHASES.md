@@ -9,7 +9,7 @@ verified — or states plainly that it was not.
 | 1 | Hand tracking, recognition, calibration, emergency stop | **Complete** |
 | 2 | Core UI control (click, drag, scroll, zoom) | **Complete** |
 | 3 | Spatial interface (floating windows, multitasking) | **Complete** |
-| 4 | Applications (files, browser, media, keyboard) | Not started |
+| 4 | Applications (files, browser, media, keyboard) | **Complete** |
 | 5 | Mobile companion | Not started |
 | 6 | Production hardening | Not started |
 
@@ -327,9 +327,145 @@ tests/test_spatial.py                   50 tests
 
 ---
 
-## Phase 4 — Applications (next)
+## Phase 4 — Applications (complete)
 
-Planned: a file browser, web-browser controls, music and video players, an
-image viewer, a settings app, and the hand-controlled virtual keyboard.
-These become the contents of the windows Phase 3 can already open, move,
-and switch between.
+Every app is a pure state machine driven by named actions
+(`app.action("next")`), so one WebSocket command reaches all of them and
+all of them are testable without a display. Apps never touch the OS
+directly: when one needs a real effect it returns an `OSRequest`, and the
+existing dispatcher and confirmation gate decide what happens. That keeps
+the Phase 2 rule intact — exactly one choke point where gestures become OS
+effects.
+
+### What works, and how it was verified
+
+**Virtual keyboard** (`apps/keyboard.py`) — 15 tests. Three layouts
+(letters/numbers/symbols), shift as one-shot with double-tap caps lock,
+backspace, space, enter. Two input methods:
+
+- **Dwell** — rest on a key. The test that matters: travelling across the
+  keyboard to reach a key types *nothing* on the way, because leaving a key
+  restarts its dwell. Verified, as is the cooldown guarantee that a hand
+  resting on a key cannot repeat faster than the configured interval.
+- **Pinch** — commits immediately, verified to bypass the dwell timer.
+
+Keys are laid out in the keyboard's own 0..1 panel space; tests check they
+tile the panel without escaping it and without overlapping within a row.
+
+**End to end**: synthetic landmarks go through the real pipeline, the
+cursor is mapped through the keyboard window's rectangle into panel space,
+and a character comes out — with dwell timing driven by frame time, not the
+wall clock.
+
+**File browser** (`apps/files.py`) — 17 tests, against real temp
+directories. Sandboxed to a configured root, with escape attempts verified
+refused three ways: `..`, an absolute path, and a **symlink pointing
+outside** (caught because the check runs on the *resolved* path).
+
+Deleting and permanently moving are never performed by the app. They return
+`file.delete` / `file.move_permanent`, both already classified CRITICAL by
+the confirmation gate — tests confirm the file still exists after an
+unconfirmed delete, and that a confirmed one goes through. A confirmed
+payload is re-validated on the way back, so a stale or tampered path
+outside the root is still refused.
+
+Copy/paste never silently overwrites; rename refuses path separators and
+existing targets.
+
+**Music and video** (`apps/media.py`) — 11 tests. Playlist walking, repeat
+off/all/one, shuffle that never picks the track already playing, "previous"
+restarting a track that is already underway, seek clamped to track length,
+end-of-playlist stopping unless repeating. Video adds fullscreen, subtitles
+and skip.
+
+**Browser controls** (`apps/browser.py`) — 8 tests. Per-tab history with
+back/forward, tabs opening/closing/cycling, and the case that catches most
+implementations: **navigating truncates the forward history**, so "forward"
+cannot resurrect a page you navigated away from. History is bounded.
+
+**Image viewer** (`apps/viewer.py`) — 7 tests. Zoom clamped to range, pan
+clamped to what the zoom level actually exposes (panning past the edge
+would lose the image with no way back), zooming out pulling an
+out-of-range pan back in, rotation in 90-degree steps only.
+
+**Settings** (`apps/settings.py`) — 7 tests. Out-of-range and wrong-type
+values are **rejected, not clamped** — a silently-corrected bad value hides
+the mistake. Verified that applying settings mutates a live pipeline
+(dominant hand, cursor gain, one-hand mode, confidence threshold).
+
+**Over the wire** — 8 more server tests. `app_action` reaches the app in a
+window; unknown actions report failure without dropping the socket; an
+app's media-key request reaches the recording adapter; the full safety
+chain works end to end (request -> gate -> too-short confirm rejected ->
+held confirm -> file actually deleted); a cancelled operation never runs;
+and the emergency stop blocks app OS effects entirely.
+
+**In a real browser** — Chromium rendered the files app listing 21 entries
+with its path, the music app's transport line, and the keyboard's 33 keys
+in the correct QWERTY order (screenshot inspected). No console errors.
+
+### Bug found and fixed during this phase
+
+**The OS adapter never reached the served pipeline.** `Session` accepted an
+adapter, stored it, and then built `GesturePipeline(config)` without it —
+so `handgesture serve` resolved every intent correctly and drove nothing at
+all. Every OS-facing test until now had constructed the pipeline directly
+and so never crossed this seam. Fixed by passing the adapter through; the
+new "an app OS request reaches the adapter" test covers the path.
+
+A second, smaller one: `App.action(name, **payload)` collided with apps
+that take a payload key called `name` (a filename). `name` is now
+positional-only.
+
+### Explicitly NOT verified
+
+- **Every OS effect an app requests.** Media keys, typed text, key chords
+  and volume are verified only as far as the recording `NullAdapter`.
+  Whether they reach a real browser or media player is **UNVERIFIED**.
+- **Real file deletion on the user's machine.** Deletion is verified
+  against pytest temp directories. The confirmation chain is real; the
+  consequences on a real home directory have not been exercised.
+- **Keyboard ergonomics.** Whether 0.7s dwell feels right, and whether the
+  key sizes are reachable with real tracking jitter, needs real hands.
+
+### How to test Phase 4 yourself
+
+```bash
+pip install -e ".[server,dev]"
+pytest                          # 332 tests
+handgesture serve --simulate
+```
+
+Press **Open app** repeatedly to cycle through files, browser, music,
+photos, settings, keyboard and video. The focused window renders its app's
+contents.
+
+For the keyboard: focus it, switch to **window** mode, and point at a key —
+resting on it types, pinching types immediately. Watch the buffer above the
+keys.
+
+Most useful feedback: whether dwell typing feels too fast or too slow, and
+whether the file browser's confirmation step is clear enough when you try
+to delete something.
+
+### Files added in Phase 4
+
+```
+src/handgesture/apps/base.py       app interface, OSRequest, registry
+src/handgesture/apps/keyboard.py   dwell + pinch virtual keyboard
+src/handgesture/apps/files.py      sandboxed file browser
+src/handgesture/apps/media.py      music and video players
+src/handgesture/apps/browser.py    tabs, history, key chords
+src/handgesture/apps/viewer.py     image zoom / pan / rotate
+src/handgesture/apps/settings.py   validated user settings
+tests/test_apps.py                 73 tests
+```
+
+---
+
+## Phase 5 — Mobile companion (next)
+
+Planned: a responsive phone interface, secure pairing with a running
+session, real-time state sync, and remote gesture settings, calibration
+controls and status monitoring. The `app_action` command and the workspace
+snapshot are already the surface the companion will speak to.
