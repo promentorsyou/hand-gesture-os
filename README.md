@@ -204,9 +204,10 @@ pip install -e ".[server,dev]"
 pytest
 ```
 
-123 tests, no camera or display required. Hand poses are generated from a
-reference geometry, so recognition, debouncing, safety, cursor mapping, and
-the WebSocket protocol are all exercised deterministically.
+250 tests, no camera or display required. Hand poses are generated from a
+reference geometry, so recognition, debouncing, safety, cursor mapping, the
+spatial workspace, and the WebSocket protocol are all exercised
+deterministically.
 
 To capture a real session as a regression fixture, use `SessionRecorder` to
 save landmarks to JSON and replay them with `RecordedSource`.

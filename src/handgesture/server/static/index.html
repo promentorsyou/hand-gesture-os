@@ -117,6 +117,50 @@
     font-weight: 650; font-size: 13px; padding: 11px 24px; border-radius: 9px; cursor: pointer;
   }
   code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+
+  /* ---- Phase 3: spatial interface ---- */
+  #spatial { position: fixed; inset: 0; pointer-events: none; z-index: 4; }
+  .win {
+    position: absolute; border-radius: 12px; overflow: hidden;
+    background: rgba(14,18,26,0.82); backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,0.10);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.55);
+    transition: box-shadow .15s ease;
+  }
+  .win.focused { border-color: rgba(120,180,255,0.55); box-shadow: 0 22px 60px rgba(0,0,0,0.7); }
+  .win.grabbed { border-color: var(--ok); }
+  .win .bar {
+    height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+    background: rgba(255,255,255,0.06); font-size: 12px; letter-spacing: .02em;
+  }
+  .win .bar .unsaved { color: var(--warn); }
+  .win .body { padding: 12px; font-size: 12px; opacity: .6; }
+  .win .corner {
+    position: absolute; right: 0; bottom: 0; width: 22px; height: 22px;
+    border-right: 2px solid rgba(255,255,255,0.25);
+    border-bottom: 2px solid rgba(255,255,255,0.25);
+    border-bottom-right-radius: 12px;
+  }
+  #shade {
+    position: fixed; inset: 0; z-index: 5; display: none;
+    background: rgba(6,9,14,0.72); backdrop-filter: blur(20px);
+    padding: 60px; overflow: auto;
+  }
+  #shade.on { display: block; }
+  #shade h2 { margin: 0 0 18px; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; opacity: .7; }
+  #shade .grid { display: flex; flex-wrap: wrap; gap: 14px; }
+  #shade .card {
+    min-width: 180px; padding: 14px; border-radius: 12px;
+    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.10);
+  }
+  #shade .card.focused { border-color: rgba(120,180,255,0.6); }
+  #badge {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 6; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    padding: 5px 12px; border-radius: 999px; background: rgba(255,255,255,0.08);
+    opacity: 0; transition: opacity .2s ease;
+  }
+  #badge.on { opacity: 1; }
 </style>
 </head>
 <body>
@@ -127,11 +171,15 @@
 </div>
 <div id="cursor"></div>
 
+<div id="spatial"></div>
+<div id="shade"></div>
+<div id="badge"></div>
+
 <div class="hud brand">
   <div class="mark">◈</div>
   <div>
     <h1>hand-gesture-os</h1>
-    <small>Phase 1 · tracking &amp; recognition</small>
+    <small>Phase 3 · spatial interface</small>
   </div>
 </div>
 
@@ -151,6 +199,8 @@
 <div class="hud modes" id="modes"></div>
 
 <div class="hud actions">
+  <button id="openAppBtn">Open app</button>
+  <button id="homeBtn">Home</button>
   <button id="calibrateBtn">Calibrate</button>
   <button id="landmarkBtn" aria-pressed="true">Landmarks</button>
   <button id="stopBtn" class="danger">Emergency stop</button>
@@ -223,6 +273,7 @@
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === "state") applyState(msg);
+      else if (msg.type === "spatial") renderWorkspace(msg.workspace);
       else if (msg.type === "calibration") applyCalibration(msg);
     };
   }
@@ -247,6 +298,7 @@
 
   function applyState(s) {
     latest = s;
+    applySpatial(s);
     el("gestureName").textContent = s.gesture === "none" ? "—" : s.gesture.replace(/_/g, " ");
     el("confVal").textContent = Math.round((s.confidence || 0) * 100) + "%";
     el("confBar").style.width = Math.round((s.confidence || 0) * 100) + "%";
@@ -286,6 +338,99 @@
     el("modeVal").textContent = msg.step.replace(/_/g, " ");
     el("curVal").textContent = msg.prompt ? msg.prompt.slice(0, 22) : "—";
     if (msg.complete) el("gestureName").textContent = "Calibrated";
+  }
+
+
+  /* ---------------- Phase 3: spatial interface ---------------- */
+  //
+  // The workspace lives on the server; this only draws it. Keeping the
+  // state authoritative on the server side is what lets the same workspace
+  // be driven by gestures, by these controls, and (Phase 5) by a phone.
+
+  let grabbedId = null;
+
+  function badge(text) {
+    const b = el("badge");
+    b.textContent = text;
+    b.classList.add("on");
+    clearTimeout(badge._t);
+    badge._t = setTimeout(() => b.classList.remove("on"), 1200);
+  }
+
+  function renderWorkspace(ws) {
+    if (!ws) return;
+    const layer = el("spatial");
+    layer.innerHTML = "";
+    // Windows arrive back to front, so DOM order is already paint order.
+    for (const w of ws.windows) {
+      if (w.state === "minimized") continue;
+      const [x, y, width, height] = w.rect;
+      const node = document.createElement("div");
+      node.className = "win"
+        + (w.id === ws.focused ? " focused" : "")
+        + (grabbedId === w.id ? " grabbed" : "");
+      node.style.left = (x * 100) + "%";
+      node.style.top = (y * 100) + "%";
+      node.style.width = (width * 100) + "%";
+      node.style.height = (height * 100) + "%";
+      node.innerHTML =
+        `<div class="bar"><b>${w.title}</b>` +
+        (w.unsaved ? `<span class="unsaved">• unsaved</span>` : "") +
+        `</div><div class="body">${w.app}</div>` +
+        (w.state === "maximized" ? "" : `<div class="corner"></div>`);
+      layer.appendChild(node);
+    }
+    renderShade(ws);
+  }
+
+  function renderShade(ws) {
+    const shade = el("shade");
+    if (ws.overlay === "none") { shade.classList.remove("on"); return; }
+    shade.classList.add("on");
+
+    if (ws.overlay === "multitask") {
+      shade.innerHTML = `<h2>Open apps</h2><div class="grid">` +
+        ws.windows.slice().reverse().map((w) =>
+          `<div class="card${w.id === ws.focused ? " focused" : ""}">` +
+          `<b>${w.title}</b><div style="opacity:.6;margin-top:6px">${w.state}</div></div>`
+        ).join("") + `</div>`;
+    } else if (ws.overlay === "quick_settings") {
+      shade.innerHTML = `<h2>Quick settings</h2><div class="grid">` +
+        Object.entries(ws.quick_settings).map(([k, v]) =>
+          `<div class="card"><b>${k.replace(/_/g, " ")}</b>` +
+          `<div style="opacity:.6;margin-top:6px">${v ? "on" : "off"}</div></div>`
+        ).join("") + `</div>` +
+        `<h2 style="margin-top:26px">Notifications (${ws.unread} unread)</h2><div class="grid">` +
+        (ws.notifications.length
+          ? ws.notifications.map((n) =>
+              `<div class="card"><b>${n.title}</b>` +
+              `<div style="opacity:.6;margin-top:6px">${n.app}</div></div>`).join("")
+          : `<div class="card" style="opacity:.5">Nothing new</div>`) +
+        `</div>`;
+    } else {
+      shade.innerHTML = `<h2>Home</h2><div class="grid">` +
+        ["files", "browser", "music", "photos", "settings"].map((app) =>
+          `<div class="card"><b>${app}</b></div>`).join("") + `</div>`;
+    }
+  }
+
+  const DEMO_APPS = ["files", "browser", "music", "photos", "settings"];
+  let demoIndex = 0;
+
+  function openDemoApp() {
+    command("open_app", { app: DEMO_APPS[demoIndex++ % DEMO_APPS.length] });
+    command("set_mode", { mode: "window" });
+  }
+
+  function applySpatial(s) {
+    if (s.spatial) renderWorkspace(s.spatial);
+    for (const a of s.spatialActions || []) {
+      if (a.name === "grab_begin") grabbedId = a.windowId;
+      else if (a.name === "grab_end") grabbedId = null;
+      if (a.name !== "window_move" && a.name !== "window_resize") {
+        badge(a.name.replace(/_/g, " ") + (a.detail ? ` · ${a.detail}` : ""));
+      }
+    }
   }
 
   /* ---------------- Drawing ---------------- */
@@ -395,6 +540,8 @@
   el("stopBtn").onclick = () => command("emergency_stop");
   el("resumeBtn").onclick = () => command("release_stop");
   el("calibrateBtn").onclick = () => command("start_calibration");
+  el("openAppBtn").onclick = openDemoApp;
+  el("homeBtn").onclick = () => command("set_overlay", { overlay: "home" });
   el("landmarkBtn").onclick = (e) => {
     showLandmarks = !showLandmarks;
     e.currentTarget.setAttribute("aria-pressed", String(showLandmarks));

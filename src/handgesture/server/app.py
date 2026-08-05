@@ -25,6 +25,7 @@ from ..gestures.vocabulary import Mode
 from ..osadapter.base import OSAdapter
 from ..osadapter.null import NullAdapter
 from ..pipeline import GesturePipeline, PipelineConfig, PipelineState
+from ..spatial import Overlay, SpatialController
 from ..types import Frame, Hand, Handedness, Point
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -109,6 +110,9 @@ class Session:
         self.pipeline = GesturePipeline(config)
         self.calibrator = Calibrator()
         self.profile = CalibrationProfile()
+        self.spatial = SpatialController(
+            screen_width=screen.width, screen_height=screen.height
+        )
 
     def handle_frame(self, payload: dict[str, Any]) -> dict[str, Any]:
         frame = frame_from_payload(payload)
@@ -128,8 +132,14 @@ class Session:
             }
 
         state = self.pipeline.process(frame)
+        actions = self.spatial.handle(state)
         payload_out = state_to_payload(state)
         payload_out["type"] = "state"
+        payload_out["spatial"] = self.spatial.workspace.snapshot()
+        payload_out["spatialActions"] = [
+            {"name": a.name, "windowId": a.window_id, "detail": a.detail}
+            for a in actions
+        ]
         return payload_out
 
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -164,6 +174,92 @@ class Session:
         if command == "cancel_calibration":
             self.calibrator.cancel()
             return {"type": "ack", "command": command}
+
+        # --- Spatial interface (Phase 3) ---
+        #
+        # These exist so the UI (and, later, the mobile companion) can drive
+        # the workspace without gestures — for development, for
+        # accessibility, and as the emergency fallback the brief allows.
+        workspace = self.spatial.workspace
+
+        if command == "open_app":
+            name = str(payload.get("app", "")).strip()
+            if not name:
+                return {"type": "error", "message": "app name required"}
+            window = workspace.open(name, unsaved=bool(payload.get("unsaved")))
+            return {"type": "spatial", "command": command, "windowId": window.id,
+                    "workspace": workspace.snapshot()}
+
+        if command == "focus_window":
+            window = workspace.focus(int(payload.get("windowId", -1)))
+            return {"type": "spatial", "command": command,
+                    "windowId": window.id if window else None,
+                    "workspace": workspace.snapshot()}
+
+        if command == "close_window":
+            result = self.spatial.request_close(int(payload.get("windowId", -1)))
+            return {
+                "type": "spatial",
+                "command": command,
+                "closed": result.closed,
+                # Unsaved work never closes on the first ask; the UI must
+                # collect a confirmation gesture and send confirm_close.
+                "needsConfirmation": result.needs_confirmation,
+                "windowId": result.window_id,
+                "workspace": workspace.snapshot(),
+            }
+
+        if command == "confirm_close":
+            closed = workspace.force_close(int(payload.get("windowId", -1)))
+            return {"type": "spatial", "command": command, "closed": closed,
+                    "workspace": workspace.snapshot()}
+
+        if command == "window_state":
+            action = str(payload.get("state", ""))
+            fn = {
+                "minimize": workspace.minimize,
+                "maximize": workspace.maximize,
+                "restore": workspace.restore,
+                "toggle_maximize": workspace.toggle_maximize,
+            }.get(action)
+            if fn is None:
+                return {"type": "error", "message": f"unknown window state: {action}"}
+            raw_id = payload.get("windowId")
+            window = fn(int(raw_id)) if raw_id is not None else fn()
+            return {"type": "spatial", "command": command,
+                    "windowId": window.id if window else None,
+                    "workspace": workspace.snapshot()}
+
+        if command == "set_overlay":
+            try:
+                overlay = Overlay(str(payload.get("overlay", "none")))
+            except ValueError:
+                return {"type": "error", "message": "unknown overlay"}
+            workspace.toggle_overlay(overlay)
+            return {"type": "spatial", "command": command,
+                    "workspace": workspace.snapshot()}
+
+        if command == "toggle_setting":
+            value = workspace.toggle_setting(str(payload.get("name", "")))
+            if value is None:
+                return {"type": "error", "message": "unknown setting"}
+            return {"type": "spatial", "command": command, "value": value,
+                    "workspace": workspace.snapshot()}
+
+        if command == "notify":
+            workspace.notify(
+                str(payload.get("app", "system")),
+                str(payload.get("title", "")),
+                str(payload.get("body", "")),
+                float(payload.get("timestamp", 0.0)),
+            )
+            return {"type": "spatial", "command": command,
+                    "workspace": workspace.snapshot()}
+
+        if command == "clear_notifications":
+            cleared = workspace.clear_notifications()
+            return {"type": "spatial", "command": command, "cleared": cleared,
+                    "workspace": workspace.snapshot()}
 
         if command == "get_profile":
             return {"type": "profile", "profile": self.profile.to_dict()}

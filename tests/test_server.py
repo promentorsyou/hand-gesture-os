@@ -216,3 +216,91 @@ def test_index_is_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "hand-gesture-os" in r.text
+
+
+# --- Phase 3: the spatial interface over the wire --------------------------
+
+
+def test_open_app_creates_a_window(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "files"})
+        reply = ws.receive_json()
+        assert reply["type"] == "spatial"
+        assert reply["workspace"]["windows"][0]["app"] == "files"
+        assert reply["workspace"]["focused"] == reply["windowId"]
+
+
+def test_closing_unsaved_work_over_the_wire_requires_confirmation(client):
+    """The confirmation rule has to survive the protocol boundary."""
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {"type": "command", "command": "open_app", "app": "editor", "unsaved": True}
+        )
+        window_id = ws.receive_json()["windowId"]
+
+        ws.send_json({"type": "command", "command": "close_window", "windowId": window_id})
+        reply = ws.receive_json()
+        assert reply["closed"] is False
+        assert reply["needsConfirmation"] is True
+        assert len(reply["workspace"]["windows"]) == 1
+
+        ws.send_json({"type": "command", "command": "confirm_close", "windowId": window_id})
+        assert ws.receive_json()["workspace"]["windows"] == []
+
+
+def test_window_state_commands_round_trip(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "files"})
+        window_id = ws.receive_json()["windowId"]
+
+        ws.send_json(
+            {"type": "command", "command": "window_state", "state": "maximize",
+             "windowId": window_id}
+        )
+        assert ws.receive_json()["workspace"]["windows"][0]["state"] == "maximized"
+
+        ws.send_json(
+            {"type": "command", "command": "window_state", "state": "restore",
+             "windowId": window_id}
+        )
+        assert ws.receive_json()["workspace"]["windows"][0]["state"] == "normal"
+
+
+def test_unknown_window_state_is_rejected(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "window_state", "state": "explode"})
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_overlay_and_quick_settings_toggle(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "set_overlay", "overlay": "home"})
+        assert ws.receive_json()["workspace"]["overlay"] == "home"
+
+        ws.send_json(
+            {"type": "command", "command": "toggle_setting", "name": "one_hand_mode"}
+        )
+        reply = ws.receive_json()
+        assert reply["value"] is True
+        assert reply["workspace"]["quick_settings"]["one_hand_mode"] is True
+
+
+def test_notifications_over_the_wire(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {"type": "command", "command": "notify", "app": "mail", "title": "Hello"}
+        )
+        assert ws.receive_json()["workspace"]["unread"] == 1
+
+        ws.send_json({"type": "command", "command": "clear_notifications"})
+        assert ws.receive_json()["workspace"]["notifications"] == []
+
+
+def test_frames_carry_the_workspace_snapshot(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "command", "command": "open_app", "app": "files"})
+        ws.receive_json()
+        ws.send_json(payload_from_hand(pose_point(), timestamp=0.05))
+        reply = ws.receive_json()
+        assert reply["type"] == "state"
+        assert len(reply["spatial"]["windows"]) == 1

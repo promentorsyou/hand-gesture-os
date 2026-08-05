@@ -8,7 +8,7 @@ verified — or states plainly that it was not.
 |-------|-------|--------|
 | 1 | Hand tracking, recognition, calibration, emergency stop | **Complete** |
 | 2 | Core UI control (click, drag, scroll, zoom) | **Complete** |
-| 3 | Spatial interface (floating windows, multitasking) | Not started |
+| 3 | Spatial interface (floating windows, multitasking) | **Complete** |
 | 4 | Applications (files, browser, media, keyboard) | Not started |
 | 5 | Mobile companion | Not started |
 | 6 | Production hardening | Not started |
@@ -238,11 +238,98 @@ whether the click delay feels wrong.
 
 ---
 
-## Phase 3 — Spatial interface (next)
+## Phase 3 — Spatial interface (complete)
 
-Planned: floating application windows rendered in the camera view,
-hand-controlled move/resize/minimise/maximise/close, app switching,
-multitasking cards, a home screen, notifications, and quick settings.
+### What works, and how it was verified
 
-The window-management methods already exist on `OSAdapter`; Phase 3 adds the
-spatial UI layer above them plus grab-and-move gesture handling.
+**Windows and rectangles** (`spatial/window.py`) — 11 tests. Windows live in
+the same normalised 0..1 space as everything else, so the whole layer is a
+pure state machine with no display involved. Grab targets are disambiguated
+deliberately: the resize corner overlaps the window body and wins, the title
+bar moves, and the body does neither (it focuses only). Clamping is tested
+against the failure that matters — a window dragged past the top edge would
+have an unreachable title bar and could never be dragged back.
+
+Maximise/restore round-trips exactly, including the classic bug where a
+second maximise overwrites the saved rectangle.
+
+**Workspace** (`spatial/workspace.py`) — 25 tests. Focus and z-order,
+hit-testing the topmost window, minimised windows dropping out of hit tests
+but staying in the app switcher, focus falling through to the next window on
+close, app cycling with wraparound, multitask cards ordered most-recent
+first, notifications (newest first, unread counts, bounded history,
+suppressed when muted), and quick settings.
+
+Grabs apply deltas against the rectangle captured at grab time rather than
+accumulating per frame, so a hand that wanders out and back lands exactly
+where it started — verified.
+
+**Gesture wiring** (`spatial/controller.py`) — 14 tests. Fist grabs, spread
+maximises, converge restores, swipe up opens the multitasking deck, swipe
+down minimises, horizontal swipes switch apps, palm-forward toggles home,
+peace toggles quick settings. A zoom below threshold does not flip window
+state, and zoom is ignored entirely while a window is held.
+
+**End to end** — one test drives *synthetic landmarks* through the real
+pipeline and out the other side as a moved window, with no hand-built
+state object anywhere in it.
+
+**In a real browser** — Chromium loaded the served UI, opened three
+cascading windows through the page's own controls, rendered them with the
+correct titles, focus ring and resize handle (screenshot inspected), showed
+the home shade with its five app cards, and — over the live WebSocket —
+had a close of unsaved work refused with `needsConfirmation: true`.
+
+### Bug found and fixed during this phase
+
+**A fist could not grab anything.** The pipeline only moves the cursor for
+pointing and pinching, deliberately, so a held fist does not drag the
+pointer around. But a fist *is* the grab gesture, so in window mode the
+spatial layer had no position to work from and every grab silently did
+nothing. Fixed by making the cursor follow a fist in `Mode.WINDOW` only;
+a test pins that the exception does not leak back into navigation mode.
+
+### Explicitly NOT verified
+
+- **Real OS windows.** The workspace draws its own windows over the camera
+  view. It does not move host-OS windows; `OSAdapter`'s window methods
+  remain **UNVERIFIED**.
+- **Gesture ergonomics.** Whether a fist is comfortable to hold while
+  moving a window, and whether the spread/converge threshold feels right,
+  can only be judged with real hands.
+
+### How to test Phase 3 yourself
+
+```bash
+pip install -e ".[server,dev]"
+pytest                          # 250 tests
+handgesture serve --simulate
+```
+
+Switch to **window** mode, press **Open app** a few times, then:
+
+- **Fist on a title bar**, move — the window follows; open the hand to drop.
+- **Fist on the bottom-right corner** — resize.
+- **Two hands apart / together** — maximise / restore.
+- **Swipe up** — multitasking deck. **Swipe down** — minimise.
+- **Swipe left / right** — switch apps.
+- **Palm forward** — home. **Peace** — quick settings.
+- **Cross both hands mid-grab** — the window must be dropped, not stuck.
+
+### Files added in Phase 3
+
+```
+src/handgesture/spatial/window.py       window model, rects, grab targets
+src/handgesture/spatial/workspace.py    windows, focus, overlays, notifications
+src/handgesture/spatial/controller.py   gesture -> workspace mapping
+tests/test_spatial.py                   50 tests
+```
+
+---
+
+## Phase 4 — Applications (next)
+
+Planned: a file browser, web-browser controls, music and video players, an
+image viewer, a settings app, and the hand-controlled virtual keyboard.
+These become the contents of the windows Phase 3 can already open, move,
+and switch between.

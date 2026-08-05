@@ -125,6 +125,12 @@ MODE_GESTURES: dict[Mode, frozenset[Gesture]] = {
             Gesture.CONVERGE,
             Gesture.SWIPE_UP,
             Gesture.SWIPE_DOWN,
+            # Phase 3: app switching, the home screen, and the
+            # quick-settings shade are all reachable from window mode.
+            Gesture.SWIPE_LEFT,
+            Gesture.SWIPE_RIGHT,
+            Gesture.PALM_FORWARD,
+            Gesture.PEACE,
             Gesture.OPEN_PALM,
             Gesture.CROSSED_HANDS,
         }

@@ -252,7 +252,8 @@ class GesturePipeline:
         # 7. Cursor.
         active = self.debouncer.active_gesture
         hand = self._cursor_hand(frame)
-        if gesture in _CURSOR_GESTURES or active in _CURSOR_GESTURES:
+        driving = self._cursor_gestures()
+        if gesture in driving or active in driving:
             if hand is not None:
                 state.cursor = self.cursor.update(hand.palm_center, now)
 
@@ -290,6 +291,18 @@ class GesturePipeline:
         if self.config.one_hand_mode or frame.hand_count == 1:
             return frame.hands[0]
         return frame.hand_by(self.config.dominant_hand) or frame.hands[0]
+
+    def _cursor_gestures(self) -> frozenset[Gesture]:
+        """Which gestures move the pointer in the current mode.
+
+        A fist is a grab. In navigation that must *not* drag the pointer
+        around, but in window mode the grab is how you carry a window, so
+        the pointer has to follow the fist or the spatial layer has no
+        position to work from.
+        """
+        if self.mode is Mode.WINDOW:
+            return _CURSOR_GESTURES | {Gesture.FIST}
+        return _CURSOR_GESTURES
 
     def _health(self, frame: Frame) -> TrackingHealth:
         if frame.brightness is not None and frame.brightness < self.config.low_light_threshold:
