@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "handgesture"
-version = "0.1.0"
+version = "0.6.0"
 description = "Control your computer entirely with webcam hand gestures"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -46,7 +46,14 @@ handgesture = "handgesture.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-handgesture = ["server/static/*", "../../config/*.yaml"]
+# The config used to be referenced as "../../config/*.yaml", which escapes
+# the package: setuptools dropped it and installed copies shipped with no
+# gesture configuration at all. It now lives inside the package.
+handgesture = [
+    "server/static/*",
+    "configuration/defaults/*.yaml",
+    "configuration/defaults/profiles/*.yaml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

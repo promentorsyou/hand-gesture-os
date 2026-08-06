@@ -25,6 +25,7 @@ from ..companion.remote import COMPANION_COMMANDS, CompanionBridge
 from ..gestures.vocabulary import MODE_GESTURES, Gesture
 from ..osadapter.base import OSAdapter
 from ..osadapter.null import NullAdapter
+from ..pipeline import PipelineConfig
 from .app import STATIC_DIR, Session
 
 #: FastAPI needs the marker in the signature; ruff rightly objects to a
@@ -32,7 +33,8 @@ from .app import STATIC_DIR, Session
 _JSON_BODY = Body(default_factory=dict)
 
 
-def build_app(adapter: OSAdapter | None = None) -> FastAPI:
+def build_app(adapter: OSAdapter | None = None,
+              config: PipelineConfig | None = None) -> FastAPI:
     """Construct the ASGI application."""
     app = FastAPI(title="hand-gesture-os", version="0.1.0")
     shared_adapter = adapter or NullAdapter()
@@ -90,7 +92,7 @@ def build_app(adapter: OSAdapter | None = None) -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
-        session = Session(shared_adapter)
+        session = Session(shared_adapter, config=config)
         sessions[session.id] = session
         await websocket.send_json({"type": "hello", "sessionId": session.id})
         try:
@@ -105,10 +107,10 @@ def build_app(adapter: OSAdapter | None = None) -> FastAPI:
                 if payload.get("type") == "command":
                     reply = _pairing_command(session, payload)
                     if reply is None:
-                        reply = session.handle_command(payload)
-                    await websocket.send_json(reply)
+                        reply = session.handle(payload)
                 else:
-                    await websocket.send_json(session.handle_frame(payload))
+                    reply = session.handle(payload)
+                await websocket.send_json(reply)
         except WebSocketDisconnect:
             pass
         finally:

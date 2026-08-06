@@ -105,6 +105,12 @@ class Workspace:
             "precision_mode": False,
             "notifications": True,
             "mirror_view": True,
+            # Accessibility. Consumed by the UI rather than the pipeline:
+            # they change how things are drawn and how big they are, not
+            # what a gesture means.
+            "high_contrast": False,
+            "large_targets": False,
+            "reduce_motion": False,
         }
         #: Running app instances, keyed by window id. A window whose app
         #: name is not registered simply has no instance — the spatial

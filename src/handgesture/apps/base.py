@@ -46,6 +46,10 @@ class ActionResult:
     message: str = ""
     #: OS effects the caller should dispatch, in order.
     requests: tuple[OSRequest, ...] = ()
+    #: Payload for actions that answer a question rather than change
+    #: something — a keyboard layout, say. Kept out of ``state()`` so that
+    #: large, rarely-changing data is not re-sent on every frame.
+    data: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def fail(cls, message: str) -> ActionResult:

@@ -17,6 +17,7 @@ That split is deliberate:
 from __future__ import annotations
 
 import secrets
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -104,13 +105,22 @@ def state_to_payload(state: PipelineState) -> dict[str, Any]:
 class Session:
     """One connected client: its pipeline, calibrator, and adapter."""
 
-    def __init__(self, adapter: OSAdapter | None = None, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        adapter: OSAdapter | None = None,
+        session_id: str | None = None,
+        config: PipelineConfig | None = None,
+    ) -> None:
         #: Identifies this session for pairing. Random rather than
         #: sequential so a companion cannot guess another session's id.
         self.id = session_id or secrets.token_hex(8)
         self.adapter = adapter or NullAdapter()
         screen = self.adapter.screen_info()
-        config = PipelineConfig()
+        # Copied, not shared: several sessions may run against one loaded
+        # config, and one session's calibration must not mutate another's.
+        config = replace(config) if config is not None else PipelineConfig()
+        config.cursor = replace(config.cursor)
+        config.debounce = replace(config.debounce)
         config.cursor.screen_width = screen.width
         config.cursor.screen_height = screen.height
         # The adapter has to reach the pipeline, or `handgesture serve`
@@ -119,6 +129,11 @@ class Session:
         self.pipeline = GesturePipeline(config, adapter=self.adapter)
         self.calibrator = Calibrator()
         self.profile = CalibrationProfile()
+        #: Failure containment. See :meth:`handle`.
+        self.consecutive_errors = 0
+        self.max_consecutive_errors = 10
+        self.last_error: str | None = None
+        self._last_good_timestamp = 0.0
         self.spatial = SpatialController(
             screen_width=screen.width, screen_height=screen.height
         )
@@ -139,6 +154,51 @@ class Session:
         result = app.execute_confirmed(operation, payload)
         return result.message if result.ok else f"failed: {result.message}"
 
+    def handle(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch one message, containing any error it causes.
+
+        A malformed frame or an unforeseen bug must not drop the WebSocket:
+        the browser would reconnect into a *fresh* session and silently lose
+        the workspace, calibration, and any pairing. So errors are reported
+        on the socket and the session survives.
+
+        The exception is a *run* of failures. If something is broken enough
+        to fail repeatedly, continuing to feed it hand positions is worse
+        than stopping — so the emergency stop engages, which is the
+        fail-safe direction.
+        """
+        try:
+            if payload.get("type") == "command":
+                reply = self.handle_command(payload)
+            else:
+                reply = self.handle_frame(payload)
+        except Exception as exc:  # noqa: BLE001 - deliberately broad
+            return self._handle_failure(exc, payload)
+
+        self.consecutive_errors = 0
+        return reply
+
+    def _handle_failure(self, exc: Exception, payload: dict[str, Any]) -> dict[str, Any]:
+        self.consecutive_errors += 1
+        self.last_error = f"{type(exc).__name__}: {exc}"
+        reply: dict[str, Any] = {
+            "type": "error",
+            "message": self.last_error,
+            "recovered": True,
+            "consecutiveErrors": self.consecutive_errors,
+        }
+
+        if self.consecutive_errors >= self.max_consecutive_errors:
+            # Never re-parse the payload that just caused a failure — a bad
+            # timestamp is exactly what tends to get you here, and a
+            # recovery path that can itself throw is not a recovery path.
+            self.pipeline.engage_stop(StopReason.API, self._last_good_timestamp)
+            self.consecutive_errors = 0
+            reply["recovered"] = False
+            reply["emergencyStopped"] = True
+            reply["message"] += " (repeated failures: gesture input stopped)"
+        return reply
+
     def handle_frame(self, payload: dict[str, Any]) -> dict[str, Any]:
         frame = frame_from_payload(payload)
 
@@ -156,6 +216,7 @@ class Session:
                 "complete": not self.calibrator.active,
             }
 
+        self._last_good_timestamp = frame.timestamp
         state = self.pipeline.process(frame)
         actions = self.spatial.handle(state)
         typed = self._drive_keyboard(state)
@@ -260,6 +321,7 @@ class Session:
             "ok": result.ok,
             "message": result.message,
             "state": app.state(),
+            "data": result.data,
             "dispatched": dispatched,
             "pendingConfirmation": pending.operation if pending else None,
         }
@@ -422,7 +484,8 @@ class Session:
         return {"type": "error", "message": f"unknown command: {command}"}
 
 
-def create_app(adapter: OSAdapter | None = None):
+def create_app(adapter: OSAdapter | None = None,
+               config: PipelineConfig | None = None):
     """Build the FastAPI app.
 
     The actual wiring lives in :mod:`handgesture.server.asgi`, imported
@@ -431,4 +494,4 @@ def create_app(adapter: OSAdapter | None = None):
     """
     from .asgi import build_app
 
-    return build_app(adapter)
+    return build_app(adapter, config)

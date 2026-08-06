@@ -3,6 +3,7 @@
     handgesture serve      # run the web UI + gesture server
     handgesture simulate   # run the pipeline on synthetic input, no camera
     handgesture doctor     # report what this machine can actually do
+    handgesture bench      # measure the frame path, headlessly
 """
 
 from __future__ import annotations
@@ -18,9 +19,17 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print("uvicorn is not installed. Run: pip install -e '.[server]'", file=sys.stderr)
         return 1
 
+    from .configuration import load as load_config
     from .osadapter.base import get_adapter
     from .osadapter.null import NullAdapter
     from .server.app import create_app
+
+    config = load_config(args.config, args.profile)
+    print(f"Config: {config.source}" + (f" (profile: {config.profile})" if config.profile else ""))
+    for problem in config.problems:
+        # Loudly, on stderr: a config problem that scrolls past unnoticed is
+        # how you end up tuning a file that is not being read.
+        print(f"  config problem: {problem}", file=sys.stderr)
 
     adapter = NullAdapter() if args.simulate else get_adapter()
     print(f"OS adapter: {adapter.name}")
@@ -31,7 +40,81 @@ def cmd_serve(args: argparse.Namespace) -> int:
         )
     print(f"UI: http://{args.host}:{args.port}/")
 
-    uvicorn.run(create_app(adapter), host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(
+        create_app(adapter, config.pipeline),
+        host=args.host,
+        port=args.port,
+        log_level="warning",
+    )
+    return 0
+
+
+def cmd_bench(args: argparse.Namespace) -> int:
+    """Measure the frame path. No camera, no display, no OS.
+
+    Worth having as a command rather than a one-off script: it is the only
+    honest way to answer "is the Python side fast enough", and the answer
+    changes as the pipeline grows.
+    """
+    import json
+    import statistics
+    import time
+
+    from .capture.simulation import pose_point
+    from .osadapter.null import NullAdapter
+    from .server.app import Session
+
+    def payload(hand, timestamp):
+        return {
+            "timestamp": timestamp,
+            "hands": [{
+                "handedness": hand.handedness.value,
+                "confidence": hand.detection_confidence,
+                "landmarks": [{"x": p.x, "y": p.y, "z": p.z} for p in hand.landmarks],
+            }],
+        }
+
+    hands = [pose_point(center=(0.40 + 0.002 * i, 0.5)) for i in range(100)]
+    rows = []
+
+    for label, apps in (
+        ("idle", []),
+        ("one app", ["music"]),
+        ("keyboard focused", ["keyboard"]),
+        ("six apps", ["files", "browser", "music", "photos", "settings", "keyboard"]),
+    ):
+        session = Session(NullAdapter())
+        for app in apps:
+            session.spatial.workspace.open(app)
+
+        for i in range(50):                       # warm up
+            session.handle_frame(payload(hands[i % 100], i * 0.033))
+
+        times, size = [], 0
+        for i in range(args.frames):
+            frame = payload(hands[i % 100], 100 + i * 0.033)
+            start = time.perf_counter()
+            out = session.handle_frame(frame)
+            times.append(time.perf_counter() - start)
+            if i == 0:
+                size = len(json.dumps(out))
+
+        times.sort()
+        rows.append((label, statistics.mean(times), times[int(len(times) * 0.95)], size))
+
+    print(f"{args.frames} frames per case, {len(hands)} distinct poses\n")
+    print(f"{'case':<20} {'mean':>9} {'p95':>9} {'payload':>10} {'at 30fps':>10}")
+    for label, mean, p95, size in rows:
+        print(
+            f"{label:<20} {mean * 1000:>7.3f}ms {p95 * 1000:>7.3f}ms "
+            f"{size:>8}B {size * 30 / 1024:>8.1f}KB/s"
+        )
+
+    worst = max(r[1] for r in rows)
+    print(f"\nBudget at 30fps is 33.3ms/frame; worst case here uses "
+          f"{worst * 1000 / 33.3 * 100:.1f}% of it.")
+    print("This measures the Python side only. Hand tracking runs in the")
+    print("browser and is not included — it is the real frame-rate limit.")
     return 0
 
 
@@ -147,6 +230,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="force the null adapter (no real OS control)",
     )
+    p_serve.add_argument("--config", help="path to a gestures.yaml (default: search, then built-in)")
+    p_serve.add_argument("--profile", help="a profile name or path to layer on top")
     p_serve.set_defaults(func=cmd_serve)
 
     p_sim = sub.add_parser("simulate", help="run the pipeline on synthetic gestures")
@@ -155,6 +240,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p_doc = sub.add_parser("doctor", help="report platform capabilities")
     p_doc.set_defaults(func=cmd_doctor)
+
+    p_bench = sub.add_parser("bench", help="measure the frame path headlessly")
+    p_bench.add_argument("--frames", type=int, default=2000)
+    p_bench.set_defaults(func=cmd_bench)
 
     args = parser.parse_args(argv)
     return args.func(args)

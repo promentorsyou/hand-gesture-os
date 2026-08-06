@@ -89,7 +89,7 @@ adapter records actions instead of performing them.
 | Palm forward, 2 seconds | Home |
 | **Cross both hands** | **Emergency stop** |
 
-All mappings live in [`config/gestures.yaml`](config/gestures.yaml) and are
+All mappings live in [`gestures.yaml`](src/handgesture/configuration/defaults/gestures.yaml) and are
 editable.
 
 **Keyboard fallbacks** (development and emergencies only): `Esc` engages the
@@ -130,8 +130,16 @@ layers sit between "a pose was seen" and "a command ran":
   and (by default) trips the emergency stop, so a drag is never dropped
   somewhere random
 
-Tune all of it in `config/gestures.yaml`, or start from
-`config/profiles/high_stability.yaml` if you are getting misfires.
+Tune all of it in a `gestures.yaml` and pass it with
+`handgesture serve --config path/to/gestures.yaml`, or start from a shipped
+profile: `handgesture serve --profile high_stability` if you are getting
+misfires. With no `--config`, the server looks for `./handgesture.yaml`,
+then `./config/gestures.yaml`, then `~/.config/handgesture/gestures.yaml`,
+and falls back to the copy shipped inside the package.
+
+Problems in a config file are printed at startup rather than swallowed: an
+unknown key, a wrong type, or an out-of-range value is reported and the
+default kept.
 
 ---
 
@@ -230,7 +238,7 @@ pip install -e ".[server,dev]"
 pytest
 ```
 
-367 tests, no camera or display required. Hand poses are generated from a
+402 tests, no camera or display required. Hand poses are generated from a
 reference geometry, so recognition, debouncing, safety, cursor mapping, the
 spatial workspace, every application, and the WebSocket protocol are all exercised
 deterministically.
@@ -253,7 +261,7 @@ also block it regardless of user permission.
 
 **Gestures fire when I didn't mean them** — run calibration, then raise
 `debounce.hold_frames` and `recognition.min_confidence` in
-`config/gestures.yaml`, or start from the `high_stability` profile.
+your own `gestures.yaml`, or start from the `high_stability` profile.
 
 **Gestures don't trigger at all** — lower `recognition.min_confidence`, check
 the confidence readout in the UI to see what score your pose is actually

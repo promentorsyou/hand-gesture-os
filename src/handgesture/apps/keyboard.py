@@ -122,6 +122,10 @@ class KeyboardApp(App):
         self.shift = False
         self.caps_lock = False
         self.buffer = ""
+        #: Bumped whenever the drawn key labels change. The layout is ~3KB
+        #: of JSON and changes a handful of times a session, so it is fetched
+        #: on demand rather than sent with every frame.
+        self.layout_revision = 0
         self._hover: str | None = None
         self._hover_since: float = 0.0
         self._last_press: float = -999.0
@@ -219,6 +223,14 @@ class KeyboardApp(App):
 
     def _apply(self, label: str, now: float) -> str:
         """Mutate the buffer for a key. Returns the character typed, if any."""
+        before = (self.layout, self.shift, self.caps_lock)
+        try:
+            return self._apply_key(label, now)
+        finally:
+            if (self.layout, self.shift, self.caps_lock) != before:
+                self.layout_revision += 1
+
+    def _apply_key(self, label: str, now: float) -> str:
         if label == SHIFT:
             # Double-tapping shift within the dwell window is caps lock —
             # the same convention every phone keyboard uses.
@@ -262,7 +274,8 @@ class KeyboardApp(App):
 
     @property
     def actions(self) -> tuple[str, ...]:
-        return ("type", "backspace", "clear", "send", "set_layout", "toggle_dwell")
+        return ("type", "backspace", "clear", "send", "set_layout",
+                "toggle_dwell", "layout")
 
     def state(self) -> dict[str, Any]:
         return {
@@ -273,6 +286,13 @@ class KeyboardApp(App):
             "dwellEnabled": self.config.dwell_enabled,
             "dwellSeconds": self.config.dwell_seconds,
             "hover": self._hover,
+            "layoutRevision": self.layout_revision,
+        }
+
+    def layout_payload(self) -> dict[str, Any]:
+        """The drawn keys. Fetch when ``layoutRevision`` changes."""
+        return {
+            "layoutRevision": self.layout_revision,
             "keys": [
                 {"label": k.label, "x": k.x, "y": k.y, "w": k.width, "h": k.height}
                 for k in self.keys()
@@ -307,11 +327,17 @@ class KeyboardApp(App):
                 ),
             )
 
+        if name == "layout":
+            return ActionResult(data=self.layout_payload())
+
         if name == "set_layout":
             try:
-                self.layout = Layout(str(payload.get("layout", "")))
+                layout = Layout(str(payload.get("layout", "")))
             except ValueError:
                 return ActionResult.fail("unknown layout")
+            if layout is not self.layout:
+                self.layout = layout
+                self.layout_revision += 1
             return ActionResult(message=self.layout.value)
 
         if name == "toggle_dwell":

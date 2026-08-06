@@ -50,6 +50,11 @@ class PipelineConfig:
     min_gesture_confidence: float = 0.55
     #: Frame brightness below which we warn and stop trusting tracking.
     low_light_threshold: float = 0.12
+    #: Brightness needed to come *back* out of the low-light state. Higher
+    #: than the entry threshold on purpose: with a single threshold, a room
+    #: sitting right at the boundary flickers between "fine" and "too dark"
+    #: every frame, which suppresses gestures at random.
+    low_light_recovery: float = 0.16
     #: Seconds without a hand before tracking is treated as lost.
     hand_loss_seconds: float = 0.5
     #: Whether losing the hand should trip the emergency stop. On by
@@ -131,6 +136,7 @@ class GesturePipeline:
         )
 
         self.mode: Mode = Mode.NAVIGATION
+        self._low_light = False
         self._last_hand_seen: float | None = None
         self._previous_mode: Mode = Mode.NAVIGATION
 
@@ -311,7 +317,13 @@ class GesturePipeline:
         return _CURSOR_GESTURES
 
     def _health(self, frame: Frame) -> TrackingHealth:
-        if frame.brightness is not None and frame.brightness < self.config.low_light_threshold:
+        if frame.brightness is not None:
+            if self._low_light:
+                # Needs to get properly brighter before we trust it again.
+                self._low_light = frame.brightness < self.config.low_light_recovery
+            else:
+                self._low_light = frame.brightness < self.config.low_light_threshold
+        if self._low_light:
             return TrackingHealth.LOW_LIGHT
         if frame.hand_count == 0:
             return TrackingHealth.NO_HANDS

@@ -185,6 +185,38 @@
     padding: 0 8px; font-size: 12px; white-space: pre; overflow: hidden;
     background: rgba(0,0,0,0.35); border-radius: 6px; display: flex; align-items: center;
   }
+
+  /* ---- Phase 6: accessibility ---- */
+  /* Applied from quick settings, so they can be toggled by hand or phone. */
+  body.a11y-contrast {
+    --fg: #ffffff; --muted: rgba(255,255,255,0.85);
+  }
+  body.a11y-contrast .hud,
+  body.a11y-contrast .win,
+  body.a11y-contrast #shade .card {
+    background: #000 !important;
+    border-color: #fff !important;
+  }
+  body.a11y-contrast .win .bar { background: #111 !important; }
+  body.a11y-contrast .kbd .key {
+    background: #000; border: 2px solid #fff; font-weight: 650;
+  }
+  body.a11y-contrast .kbd .key.hover { background: #fff; color: #000; }
+
+  body.a11y-large button,
+  body.a11y-large #shade .card { font-size: 16px; padding: 14px 18px; }
+  body.a11y-large .kbd .key { font-size: 18px; font-weight: 650; }
+  body.a11y-large .applist li { padding: 10px 12px; font-size: 14px; }
+  body.a11y-large #cursor { transform: scale(1.8); }
+
+  body.a11y-reduced *,
+  body.a11y-reduced *::before,
+  body.a11y-reduced *::after {
+    transition: none !important; animation: none !important;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
 </style>
 </head>
 <body>
@@ -216,7 +248,7 @@
   <div class="mark">◈</div>
   <div>
     <h1>hand-gesture-os</h1>
-    <small>Phase 5 · mobile companion</small>
+    <small>Phase 6 · production hardening</small>
   </div>
 </div>
 
@@ -313,6 +345,7 @@
       if (msg.type === "state") applyState(msg);
       else if (msg.type === "spatial") renderWorkspace(msg.workspace);
       else if (msg.type === "pairing") renderPairing(msg);
+      else if (msg.type === "app") onAppReply(msg);
       else if (msg.type === "hello") window.__sessionId = msg.sessionId;
       else if (msg.type === "calibration") applyCalibration(msg);
     };
@@ -331,6 +364,7 @@
   // session over the *page's own* socket. Each connection gets its own
   // server-side session, so a second socket would not touch this workspace.
   window.__command = command;
+  window.__send = send;
 
   /* ---------------- UI updates ---------------- */
 
@@ -405,6 +439,7 @@
     if (!ws) return;
     // Kept for the UI controls (and for tests) to look up window ids.
     window.__lastWorkspace = ws;
+    applyAccessibility(ws.quick_settings);
     const layer = el("spatial");
     layer.innerHTML = "";
     // Windows arrive back to front, so DOM order is already paint order.
@@ -423,7 +458,7 @@
         `<div class="bar"><b>${w.title}</b>` +
         (w.unsaved ? `<span class="unsaved">• unsaved</span>` : "") +
         `</div><div class="body">` +
-        (w.id === ws.focused ? renderApp(ws.app) || esc(w.app) : esc(w.app)) +
+        (w.id === ws.focused ? renderApp(ws.app, w.id) || esc(w.app) : esc(w.app)) +
         `</div>` +
         (w.state === "maximized" ? "" : `<div class="corner"></div>`);
       layer.appendChild(node);
@@ -488,10 +523,10 @@
   // layout, which is too much to send for every window every frame), so
   // unfocused windows show their name and nothing else.
 
-  function renderApp(app) {
+  function renderApp(app, windowId) {
     if (!app) return "";
     const s = app.state;
-    if (app.name === "keyboard") return renderKeyboard(s);
+    if (app.name === "keyboard") return renderKeyboard(s, windowId);
     if (app.name === "files") return renderFiles(s);
     if (app.name === "music" || app.name === "video") return renderMedia(s);
     if (app.name === "browser") return renderBrowser(s);
@@ -504,8 +539,9 @@
     return String(text).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   }
 
-  function renderKeyboard(s) {
-    const keys = s.keys.map((k) =>
+  function renderKeyboard(s, windowId) {
+    ensureLayout(windowId, s.layoutRevision);
+    const keys = layoutCache.keys.map((k) =>
       `<div class="key${k.label === s.hover ? " hover" : ""}" style="left:${k.x * 100}%;` +
       `top:${k.y * 100}%;width:${k.w * 100}%;height:${k.h * 100}%">${esc(k.label)}</div>`
     ).join("");
@@ -589,6 +625,46 @@
       // typing digits that cannot work.
       if (left <= 0) { clearInterval(pairTimer); panel.style.display = "none"; }
     }, 1000);
+  }
+
+
+  /* ---------------- Phase 6: accessibility + layout cache ---------------- */
+
+  function applyAccessibility(settings) {
+    if (!settings) return;
+    document.body.classList.toggle("a11y-contrast", !!settings.high_contrast);
+    document.body.classList.toggle("a11y-large", !!settings.large_targets);
+    document.body.classList.toggle("a11y-reduced", !!settings.reduce_motion);
+  }
+
+  // The keyboard layout is ~3KB and changes a handful of times a session, so
+  // it is fetched on demand when its revision changes rather than arriving
+  // with every frame.
+  const layoutCache = { revision: -1, keys: [], pending: false };
+
+  function ensureLayout(windowId, revision) {
+    if (revision === layoutCache.revision || layoutCache.pending) return;
+    layoutCache.pending = true;
+    command("app_action", { windowId, action: "layout" });
+  }
+
+  function onAppReply(msg) {
+    if (msg.action === "layout" && msg.data && msg.data.keys) {
+      layoutCache.revision = msg.data.layoutRevision;
+      layoutCache.keys = msg.data.keys;
+      layoutCache.pending = false;
+      if (window.__lastWorkspace) renderWorkspace(window.__lastWorkspace);
+      return;
+    }
+
+    // Any other app reply carries fresh state for that app. Folding it into
+    // the cached workspace and re-rendering matters because frames are not
+    // always flowing: with tracking stopped, waiting for the next frame
+    // would leave the window showing stale content indefinitely.
+    const ws = window.__lastWorkspace;
+    if (!ws || !msg.state || msg.windowId !== ws.focused) return;
+    ws.app = { name: msg.app, state: msg.state };
+    renderWorkspace(ws);
   }
 
   /* ---------------- Drawing ---------------- */

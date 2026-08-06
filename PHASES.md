@@ -11,7 +11,7 @@ verified — or states plainly that it was not.
 | 3 | Spatial interface (floating windows, multitasking) | **Complete** |
 | 4 | Applications (files, browser, media, keyboard) | **Complete** |
 | 5 | Mobile companion | **Complete** |
-| 6 | Production hardening | Not started |
+| 6 | Production hardening | **Complete** |
 
 ---
 
@@ -91,7 +91,7 @@ doctor` reports platform capabilities.
   unverified. `get_adapter()` falls back to the null adapter here.
 - **Gesture thresholds against real hands.** Every threshold is calibrated
   against synthetic geometry. Real hands vary; expect to run calibration and
-  possibly adjust `config/gestures.yaml`.
+  possibly adjust `gestures.yaml` (see Phase 6).
 
 ### How to test Phase 1 yourself
 
@@ -140,8 +140,8 @@ src/handgesture/
   server/app.py                 session + protocol
   server/asgi.py                FastAPI wiring
   server/static/index.html      live UI
-config/gestures.yaml            gesture map
-config/profiles/*.yaml          sample profiles
+configuration/defaults/gestures.yaml   gesture map (moved in Phase 6)
+configuration/defaults/profiles/*.yaml sample profiles
 tests/                          123 tests
 ```
 
@@ -205,7 +205,7 @@ covers losing tracking mid-drag.
   right arguments* is made is verified; that it moves your real cursor or
   scrolls your real window is **UNVERIFIED**.
 - **Swipe/scroll thresholds against real hands.** Tuned against synthetic
-  motion only. Expect to adjust `config/gestures.yaml`.
+  motion only. Expect to adjust `gestures.yaml`.
 - **Zoom and multitask key chords** are best-guess per platform and have
   never been sent to a real desktop.
 
@@ -571,9 +571,152 @@ tests/test_companion.py                    35 tests
 
 ---
 
-## Phase 6 — Production hardening (next)
+## Phase 6 — Production hardening (complete)
 
-Planned: error recovery, performance work on the frame path, low-light
-handling beyond the current warning, the accessibility settings wired
-through to the UI, packaging, and the platform adapters given whatever
-verification is possible without target hardware.
+The theme of this phase is what happens when things are *wrong*: a bad
+config file, a malformed frame, a platform library that is not installed, a
+room that is almost too dark. Plus the two things that had quietly never
+been true — the config was not read, and it was not installed.
+
+### The two real bugs this phase found
+
+**The configuration was documentation, not configuration.** The README told
+people to edit `config/gestures.yaml` and *nothing loaded it*. No Python
+code referenced it at all. There is now a real loader
+(`configuration/loader.py`), wired to `handgesture serve --config` and
+`--profile`, and a drift test that fails if the confirmation levels in the
+YAML ever disagree with the table the gate actually enforces — because a
+file full of destructive operations that lies about what is protected is
+the worst kind of documentation.
+
+**The configuration was not installed.** `package-data` referenced
+`"../../config/*.yaml"`, which escapes the package: setuptools dropped it
+silently. Verified by building a wheel and listing its contents — the
+config files were **absent**. They now live inside the package at
+`handgesture/configuration/defaults/`. Verified by building the wheel
+again, installing it into a clean venv, and loading the config from the
+installed copy with zero problems reported.
+
+### What works, and how it was verified
+
+**Configuration** — 15 tests. The shipped `gestures.yaml` and all three
+profiles load with no problems. A profile layers on top of the base config
+(`high_stability` really does raise `hold_frames` to 8 and drop cursor gain
+to 0.7; `left_handed` really does switch the dominant hand). Bad input is
+**reported, not ignored**: unknown sections, unknown modes and gestures in
+bindings, wrong types, out-of-range numbers, and invalid YAML each produce
+a message while the default is kept — a config file must not be able to
+leave you unable to gesture your way back to a working state.
+
+**Error recovery** — 5 tests. `Session.handle` contains any exception and
+reports it on the socket instead of dropping the connection, because a
+dropped socket means the browser reconnects into a *fresh* session and
+silently loses the workspace, calibration and pairing. A run of failures is
+different: at the limit the emergency stop engages, which is the fail-safe
+direction.
+
+A bug in that path was caught by its own test: the failure handler parsed
+`payload["timestamp"]`, so a bad timestamp — exactly what gets you there —
+made the recovery path throw. It now uses the last known-good frame time.
+
+**Low light** — 4 tests. There are now separate entry (0.12) and recovery
+(0.16) thresholds. With a single threshold, a room sitting right at the
+boundary flips between "fine" and "too dark" every frame, suppressing
+gestures at random; the test drives brightness straddling 0.12 and asserts
+the state stays put.
+
+**Per-frame payload** — measured, not guessed. `handgesture bench` is a
+real command:
+
+```
+case                      mean       p95    payload   at 30fps
+idle                   0.094ms   0.132ms      753B     22.1KB/s
+one app                0.096ms   0.133ms     1297B     38.0KB/s
+keyboard focused       0.163ms   0.280ms     1052B     30.8KB/s
+six apps               0.157ms   0.205ms     1781B     52.2KB/s
+```
+
+The keyboard case was **3885 B and 0.235 ms** before this phase: its whole
+key geometry (~3 KB) was serialised on every frame though it changes a
+handful of times a session. It is now fetched on demand when a layout
+revision changes. Measured again over a real WebSocket in Chromium: mean
+**818 bytes** per state frame with the keyboard focused.
+
+The honest headline: the Python side uses **0.5% of a 30fps frame budget**.
+It is not the bottleneck and never was — browser-side MediaPipe inference
+is the real frame-rate limit, and `bench` says so in its output rather than
+implying otherwise.
+
+**Platform adapters** — 3 tests. Every adapter module **imports** on a
+headless box (importing must never require the platform library), each
+reports an actionable message when it cannot run — here, `No module named
+'pyautogui'` and `xdotool not found; install it or run with the null
+adapter` — and `get_adapter()` never raises for any platform string,
+falling back to the null adapter.
+
+**Accessibility** — 2 Python tests plus browser verification. High
+contrast, larger targets and reduced motion are in quick settings, so they
+are reachable **by hand gesture or from the phone**, not only from a config
+file. Verified in Chromium that toggling them applies the classes and that
+high contrast really turns a window background to `rgb(0, 0, 0)`.
+
+**In a real browser** — the keyboard rendered 33 keys from the cache;
+switching layout refetched and the labels changed from `qwert` to `12345`;
+all three accessibility settings applied. That layout-switch check found a
+third bug: an app reply updated server state but never re-rendered, so with
+tracking stopped the window would show stale content indefinitely. Fixed
+and re-verified.
+
+**Packaging** — 3 tests plus a real build. Version bumped to 0.6.0; wheel
+built, installed into a clean venv, and `handgesture doctor` plus a config
+load run from the installed copy.
+
+### Explicitly NOT verified
+
+Unchanged from earlier phases, and still true:
+
+- **Live webcam hand tracking.** No camera here; the browser tracking path
+  has never processed a real hand.
+- **All three OS adapters.** They import cleanly and fail with useful
+  messages, which is all that can be checked without a desktop session.
+  Every real cursor move, key press, window operation and file deletion on
+  a user's machine is **UNVERIFIED**.
+- **Pairing over a real network**, and real phone hardware.
+- **Every threshold against real hands** — recognition, swipes, dwell
+  timing, and the low-light thresholds are all calibrated against synthetic
+  geometry.
+
+### How to test Phase 6 yourself
+
+```bash
+pip install -e ".[server,dev]"
+pytest                                    # 402 tests
+handgesture bench                         # the numbers above, on your machine
+handgesture serve --profile high_stability
+handgesture serve --config broken.yaml    # problems printed, defaults kept
+```
+
+Then in the UI, open **Home → settings** or use the phone, and toggle high
+contrast and larger targets — both should take effect immediately.
+
+### Files added in Phase 6
+
+```
+src/handgesture/configuration/loader.py            the config loader
+src/handgesture/configuration/defaults/            moved inside the package
+tests/test_hardening.py                            35 tests
+```
+
+---
+
+## All six phases complete
+
+402 tests pass, ruff is clean, the wheel builds and installs, and
+`handgesture simulate` runs the whole pipeline end to end on synthetic
+gestures.
+
+What that does **not** mean: this has never seen a real hand, a real
+camera, or a real desktop. Everything marked UNVERIFIED above stays that
+way until someone runs it on target hardware. The most valuable next step
+is not more code — it is one session in front of a webcam, reporting which
+gestures misfire.

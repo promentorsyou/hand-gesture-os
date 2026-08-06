@@ -144,6 +144,10 @@ class CompanionBridge:
             # A phone must not get to choose the file browser's root.
             payload = {k: v for k, v in payload.items() if k != "appKwargs"}
 
-        reply = self.session.handle_command(payload)
+        # Through ``handle`` rather than ``handle_command`` so a companion
+        # cannot crash the desktop session with a malformed payload. The
+        # type is set here rather than trusted from the wire: a companion
+        # must never be able to route a message down the frame path.
+        reply = self.session.handle({**payload, "type": "command"})
         reply["viaCompanion"] = True
         return reply
