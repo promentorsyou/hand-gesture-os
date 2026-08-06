@@ -198,12 +198,25 @@
 <div id="spatial"></div>
 <div id="shade"></div>
 <div id="badge"></div>
+<div id="pairPanel" class="hud panel" style="display:none">
+  <h2 style="margin:0 0 8px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.7">Pair a phone</h2>
+  <div id="pairCode" style="font:700 30px/1 ui-monospace,monospace;letter-spacing:.2em"></div>
+  <p style="margin:10px 0 0;font-size:12px;opacity:.65;max-width:280px">
+    Open <code id="pairUrl"></code> on your phone and enter this code.
+    It expires in <span id="pairExpiry">120</span>s and works once.
+  </p>
+  <div id="pairCompanions" style="font-size:12px;opacity:.65;margin-top:8px"></div>
+  <div style="display:flex;gap:8px;margin-top:12px">
+    <button id="pairCloseBtn">Done</button>
+    <button id="pairRevokeBtn" class="danger">Unpair all</button>
+  </div>
+</div>
 
 <div class="hud brand">
   <div class="mark">◈</div>
   <div>
     <h1>hand-gesture-os</h1>
-    <small>Phase 4 · applications</small>
+    <small>Phase 5 · mobile companion</small>
   </div>
 </div>
 
@@ -223,6 +236,7 @@
 <div class="hud modes" id="modes"></div>
 
 <div class="hud actions">
+  <button id="pairBtn">Pair a phone</button>
   <button id="openAppBtn">Open app</button>
   <button id="homeBtn">Home</button>
   <button id="calibrateBtn">Calibrate</button>
@@ -298,6 +312,8 @@
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === "state") applyState(msg);
       else if (msg.type === "spatial") renderWorkspace(msg.workspace);
+      else if (msg.type === "pairing") renderPairing(msg);
+      else if (msg.type === "hello") window.__sessionId = msg.sessionId;
       else if (msg.type === "calibration") applyCalibration(msg);
     };
   }
@@ -545,6 +561,36 @@
     return `<ul class="applist">${rows}</ul>`;
   }
 
+  /* ---------------- Phase 5: pairing ---------------- */
+
+  let pairTimer = null;
+
+  function renderPairing(msg) {
+    const panel = el("pairPanel");
+    if (!msg.code) {
+      panel.style.display = "none";
+      clearInterval(pairTimer);
+      return;
+    }
+    panel.style.display = "";
+    el("pairCode").textContent = msg.code.replace(/(\d{3})(\d{3})/, "$1 $2");
+    el("pairUrl").textContent = location.origin + "/companion";
+    el("pairCompanions").textContent = (msg.companions || []).length
+      ? "Paired: " + msg.companions.join(", ")
+      : "No devices paired yet.";
+
+    let left = msg.expiresIn ?? 120;
+    el("pairExpiry").textContent = left;
+    clearInterval(pairTimer);
+    pairTimer = setInterval(() => {
+      left -= 1;
+      el("pairExpiry").textContent = Math.max(0, left);
+      // The code is dead server-side by now; hiding it avoids the user
+      // typing digits that cannot work.
+      if (left <= 0) { clearInterval(pairTimer); panel.style.display = "none"; }
+    }, 1000);
+  }
+
   /* ---------------- Drawing ---------------- */
 
   function resize() {
@@ -654,6 +700,9 @@
   el("calibrateBtn").onclick = () => command("start_calibration");
   el("openAppBtn").onclick = openDemoApp;
   el("homeBtn").onclick = () => command("set_overlay", { overlay: "home" });
+  el("pairBtn").onclick = () => command("pair_start");
+  el("pairCloseBtn").onclick = () => { el("pairPanel").style.display = "none"; command("pair_cancel"); };
+  el("pairRevokeBtn").onclick = () => command("pair_revoke_all");
   el("landmarkBtn").onclick = (e) => {
     showLandmarks = !showLandmarks;
     e.currentTarget.setAttribute("aria-pressed", String(showLandmarks));

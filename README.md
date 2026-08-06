@@ -197,6 +197,32 @@ the recording `NullAdapter`.
 
 ---
 
+## Mobile companion
+
+A phone can pair with a running session to show status and act as a second
+screen — most usefully, an emergency stop you can reach without making a
+gesture the system may be misreading.
+
+On the desktop page press **Pair a phone**. On the phone, open
+`http://<your-machine>:8000/companion` and enter the six digits.
+
+Codes last two minutes, work once, and are rate-limited — after a handful
+of wrong guesses pairing locks out entirely. A redeemed code becomes a
+long random token bound to that one session; **Unpair all** on the desktop
+revokes it immediately, and a connected phone is kicked on its next
+message.
+
+Two things a companion deliberately **cannot** do:
+
+- **Confirm a destructive operation.** Confirmation requires a visible
+  gesture at the camera; a phone tap is not one. The phone can *cancel* a
+  pending confirmation, which is always the safe direction.
+- **Choose the file browser's sandbox root.**
+
+> **Pairing authenticates the link. It does not encrypt it.** On anything
+> but a trusted network, put the server behind TLS. This has not been
+> tested over a real network — see `PHASES.md`.
+
 ## Testing
 
 ```bash
@@ -204,7 +230,7 @@ pip install -e ".[server,dev]"
 pytest
 ```
 
-332 tests, no camera or display required. Hand poses are generated from a
+367 tests, no camera or display required. Hand poses are generated from a
 reference geometry, so recognition, debouncing, safety, cursor mapping, the
 spatial workspace, every application, and the WebSocket protocol are all exercised
 deterministically.

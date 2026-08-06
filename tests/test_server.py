@@ -193,6 +193,7 @@ def test_gestures_endpoint_lists_modes(client):
 def test_websocket_route_accepts_connections(client):
     """Guards the annotation-resolution bug described above."""
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "set_mode", "mode": "browser"})
         assert ws.receive_json() == {
             "type": "ack",
@@ -204,6 +205,7 @@ def test_websocket_route_accepts_connections(client):
 def test_websocket_runs_the_pipeline(client):
     """Frames over the wire must produce real gesture state."""
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         reply = None
         for i in range(6):
             ws.send_json(payload_from_hand(pose_point(), timestamp=i * 0.05))
@@ -215,6 +217,7 @@ def test_websocket_runs_the_pipeline(client):
 
 def test_websocket_survives_malformed_json(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_text("{not json")
         assert ws.receive_json()["type"] == "error"
         # Connection must stay usable afterwards.
@@ -233,6 +236,7 @@ def test_index_is_served(client):
 
 def test_open_app_creates_a_window(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "files"})
         reply = ws.receive_json()
         assert reply["type"] == "spatial"
@@ -243,6 +247,7 @@ def test_open_app_creates_a_window(client):
 def test_closing_unsaved_work_over_the_wire_requires_confirmation(client):
     """The confirmation rule has to survive the protocol boundary."""
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json(
             {"type": "command", "command": "open_app", "app": "editor", "unsaved": True}
         )
@@ -260,6 +265,7 @@ def test_closing_unsaved_work_over_the_wire_requires_confirmation(client):
 
 def test_window_state_commands_round_trip(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "files"})
         window_id = ws.receive_json()["windowId"]
 
@@ -278,12 +284,14 @@ def test_window_state_commands_round_trip(client):
 
 def test_unknown_window_state_is_rejected(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "window_state", "state": "explode"})
         assert ws.receive_json()["type"] == "error"
 
 
 def test_overlay_and_quick_settings_toggle(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "set_overlay", "overlay": "home"})
         assert ws.receive_json()["workspace"]["overlay"] == "home"
 
@@ -297,6 +305,7 @@ def test_overlay_and_quick_settings_toggle(client):
 
 def test_notifications_over_the_wire(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json(
             {"type": "command", "command": "notify", "app": "mail", "title": "Hello"}
         )
@@ -308,6 +317,7 @@ def test_notifications_over_the_wire(client):
 
 def test_frames_carry_the_workspace_snapshot(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "files"})
         ws.receive_json()
         ws.send_json(payload_from_hand(pose_point(), timestamp=0.05))
@@ -321,6 +331,7 @@ def test_frames_carry_the_workspace_snapshot(client):
 
 def test_list_apps(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "list_apps"})
         apps = ws.receive_json()["apps"]
         assert "keyboard" in apps and "files" in apps
@@ -328,6 +339,7 @@ def test_list_apps(client):
 
 def test_app_action_reaches_the_app_in_a_window(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "music"})
         window_id = ws.receive_json()["windowId"]
 
@@ -343,6 +355,7 @@ def test_app_action_reaches_the_app_in_a_window(client):
 
 def test_app_action_on_a_window_with_no_app_errors(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "app_action",
                       "windowId": 99999, "action": "next"})
         assert ws.receive_json()["type"] == "error"
@@ -350,6 +363,7 @@ def test_app_action_on_a_window_with_no_app_errors(client):
 
 def test_an_unknown_app_action_reports_failure_without_dropping_the_socket(client):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "music"})
         window_id = ws.receive_json()["windowId"]
         ws.send_json({"type": "command", "command": "app_action",
@@ -364,6 +378,7 @@ def test_an_unknown_app_action_reports_failure_without_dropping_the_socket(clien
 def test_an_app_os_request_reaches_the_adapter(client, adapter):
     """Media keys must actually get as far as the OS adapter."""
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "music"})
         window_id = ws.receive_json()["windowId"]
         adapter.clear()
@@ -380,6 +395,7 @@ def test_a_destructive_file_operation_waits_for_confirmation(client, adapter, tm
     victim.write_text("x")
 
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "files",
                       "appKwargs": {"root": str(tmp_path)}})
         window_id = ws.receive_json()["windowId"]
@@ -414,6 +430,7 @@ def test_a_cancelled_file_operation_never_runs(client, tmp_path):
     keeper.write_text("x")
 
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "files",
                       "appKwargs": {"root": str(tmp_path)}})
         window_id = ws.receive_json()["windowId"]
@@ -432,6 +449,7 @@ def test_a_cancelled_file_operation_never_runs(client, tmp_path):
 
 def test_the_emergency_stop_blocks_app_os_effects(client, adapter):
     with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()['type'] == 'hello'
         ws.send_json({"type": "command", "command": "open_app", "app": "music"})
         window_id = ws.receive_json()["windowId"]
         ws.send_json({"type": "command", "command": "emergency_stop"})

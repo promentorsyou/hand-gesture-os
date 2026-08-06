@@ -16,6 +16,7 @@ That split is deliberate:
 
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +104,10 @@ def state_to_payload(state: PipelineState) -> dict[str, Any]:
 class Session:
     """One connected client: its pipeline, calibrator, and adapter."""
 
-    def __init__(self, adapter: OSAdapter | None = None) -> None:
+    def __init__(self, adapter: OSAdapter | None = None, session_id: str | None = None) -> None:
+        #: Identifies this session for pairing. Random rather than
+        #: sequential so a companion cannot guess another session's id.
+        self.id = session_id or secrets.token_hex(8)
         self.adapter = adapter or NullAdapter()
         screen = self.adapter.screen_info()
         config = PipelineConfig()

@@ -10,7 +10,7 @@ verified — or states plainly that it was not.
 | 2 | Core UI control (click, drag, scroll, zoom) | **Complete** |
 | 3 | Spatial interface (floating windows, multitasking) | **Complete** |
 | 4 | Applications (files, browser, media, keyboard) | **Complete** |
-| 5 | Mobile companion | Not started |
+| 5 | Mobile companion | **Complete** |
 | 6 | Production hardening | Not started |
 
 ---
@@ -463,9 +463,117 @@ tests/test_apps.py                 73 tests
 
 ---
 
-## Phase 5 — Mobile companion (next)
+## Phase 5 — Mobile companion (complete)
 
-Planned: a responsive phone interface, secure pairing with a running
-session, real-time state sync, and remote gesture settings, calibration
-controls and status monitoring. The `app_action` command and the workspace
-snapshot are already the surface the companion will speak to.
+A phone paired to a running desktop session, so you can see status, change
+mode, run calibration while standing at the camera, and — most usefully —
+hit the emergency stop without having to make a gesture the system may be
+misreading.
+
+### The two rules that shaped it
+
+**A companion can stop, but cannot confirm.** The emergency stop is
+reachable from the phone. Confirming a destructive operation is not: the
+design requires a *visible gesture at the camera* before anything
+irreversible happens, and a phone tap is not that. A companion may
+**cancel** a pending confirmation, because cancelling is always the safe
+direction. Verified both in the bridge and over a live socket.
+
+**A companion cannot choose a sandbox root.** `open_app` is allowed, but its
+`appKwargs` are stripped, so a phone cannot point the file browser at `/`.
+
+### What works, and how it was verified
+
+**Pairing** (`companion/pairing.py`) — 17 tests, written as adversarial
+cases rather than happy paths:
+
+- Codes are six digits from `secrets`, valid for two minutes, **single
+  use**, and issuing a new one **invalidates the old** so a forgotten code
+  cannot still be redeemed.
+- Wrong codes are **rate-limited**: after the attempt limit, pairing locks
+  out — and the lock refuses even the *correct* code until it lifts. Six
+  digits is only a million possibilities; the lockout is what makes a code
+  short enough to read aloud.
+- A successful pairing clears the failure count, so ordinary typos do not
+  accumulate toward a lockout across sessions.
+- A redeemed code becomes a long `token_urlsafe(32)` bound to one session.
+  Every comparison uses `hmac.compare_digest`, including the scan over
+  live codes — comparing only against a dict hit would leak, through
+  timing, whether a code exists at all.
+- Revoking works per token and per session; device labels are bounded.
+
+**The remote surface** (`companion/remote.py`) — 8 tests. An allowlist,
+with anything outside it refused *with a reason* rather than silently
+ignored, so a version mismatch is obvious. The snapshot is deliberately
+compact: no per-frame gesture scores or landmark data, which would dominate
+a phone link and are useless on it.
+
+**Over the wire** — 10 more tests. The full handshake (desktop requests a
+code → `POST /api/pair/redeem` → companion socket); a wrong code gets a
+403; an unauthorised or token-less companion socket is **closed before
+`accept()`**, so it never gets a live socket it could send commands down;
+revoking from the desktop kicks a connected companion, because the token is
+re-checked on **every message**, not only at connect; and a code for a
+session that has ended cannot be redeemed.
+
+**In a real browser — two pages, the actual handshake.** Chromium ran the
+desktop page and a second page at an iPhone viewport (390×844):
+
+- the desktop showed a six-digit code
+- the phone was refused with "invalid or expired code" on a wrong code and
+  stayed on the pairing screen
+- the correct code paired it: status "connected", 8 mode buttons, 5 quick
+  settings
+- opening a window on the desktop appeared on the phone ("Files · normal")
+- **emergency stop pressed on the phone** put the desktop session into the
+  stopped state, and the phone rendered the stop banner
+- **revoking from the desktop** kicked the phone straight back to the
+  pairing screen
+
+Screenshots of both were inspected. The only console errors were a favicon
+404 and the deliberate 403 from the wrong-code test.
+
+### Explicitly NOT verified
+
+- **Pairing over a real network.** Everything above ran against
+  `127.0.0.1`. Pairing authenticates the link; it does **not** encrypt it.
+  On anything but a trusted LAN the server needs to be behind TLS, and that
+  deployment is **UNVERIFIED**.
+- **Real phone hardware.** Verified at a phone viewport in Chromium, which
+  covers layout and touch-target sizing but not real iOS/Android browsers,
+  backgrounding behaviour, or reconnection over a flaky mobile link.
+- **Polling cadence.** The companion polls twice a second, which was chosen
+  rather than measured. Battery cost on a real phone is unknown.
+
+### How to test Phase 5 yourself
+
+```bash
+handgesture serve --simulate
+```
+
+On the desktop page press **Pair a phone**. On your phone — on the same
+network — open `http://<your-machine>:8000/companion` and type the six
+digits. The phone should show status, mode buttons, calibration controls,
+quick settings, open windows and notifications, all live.
+
+Then try: press **Emergency stop** on the phone and watch the desktop
+banner appear; press **Unpair all** on the desktop and watch the phone drop
+back to the pairing screen; and try a wrong code to see the refusal.
+
+### Files added in Phase 5
+
+```
+src/handgesture/companion/pairing.py       codes, tokens, rate limiting
+src/handgesture/companion/remote.py        the allowlisted remote surface
+src/handgesture/server/static/companion.html   the phone UI
+tests/test_companion.py                    35 tests
+```
+
+---
+
+## Phase 6 — Production hardening (next)
+
+Planned: error recovery, performance work on the frame path, low-light
+handling beyond the current warning, the accessibility settings wired
+through to the UI, packaging, and the platform adapters given whatever
+verification is possible without target hardware.
