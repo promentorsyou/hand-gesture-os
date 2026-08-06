@@ -1,0 +1,9 @@
+# Default gesture profile — right-handed, two-hand mode, standard sensitivity.
+name: default
+dominant_hand: right
+one_hand_mode: false
+pinch_threshold: 0.42
+extension_threshold: 0.5
+cursor_margin: 0.15
+cursor_gain: 1.0
+debounce_hold_frames: 3

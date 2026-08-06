@@ -1,0 +1,10 @@
+# Left-handed profile. The cursor follows the left hand; two-hand gestures
+# are unchanged (they are symmetric).
+name: left_handed
+dominant_hand: left
+one_hand_mode: false
+pinch_threshold: 0.42
+extension_threshold: 0.5
+cursor_margin: 0.15
+cursor_gain: 1.0
+debounce_hold_frames: 3

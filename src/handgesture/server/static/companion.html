@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#06090e">
+<title>hand-gesture-os · companion</title>
+<style>
+  :root {
+    --bg: #06090e; --panel: rgba(255,255,255,0.06); --line: rgba(255,255,255,0.10);
+    --fg: #e8edf5; --muted: rgba(232,237,245,0.55);
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #7cb0ff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 16px
+             calc(16px + env(safe-area-inset-bottom));
+    max-width: 560px; margin-inline: auto;
+  }
+  h1 { font-size: 17px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  h2 {
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); margin: 22px 0 10px; font-weight: 650;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 14px;
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .row + .row { margin-top: 10px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .dot.warn { background: var(--warn); }
+
+  button, input {
+    font: inherit; color: inherit; border-radius: 11px;
+    border: 1px solid var(--line); background: rgba(255,255,255,0.07);
+    padding: 12px 14px; min-height: 46px;   /* comfortable thumb target */
+  }
+  button { cursor: pointer; }
+  button:active { background: rgba(255,255,255,0.14); }
+  button.primary { background: var(--accent); color: #06121f; border: 0; font-weight: 650; }
+  button.danger { background: var(--bad); color: #2b0707; border: 0; font-weight: 650; }
+  button[aria-pressed="true"] { background: rgba(124,176,255,0.24); border-color: var(--accent); }
+  button:disabled { opacity: .4; }
+  .stack { display: grid; gap: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .wide { width: 100%; }
+
+  #code {
+    font: 700 34px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .18em; text-align: center; padding: 8px 0;
+  }
+  .banner {
+    border-radius: 12px; padding: 12px 14px; margin-top: 12px;
+    background: rgba(248,113,113,0.16); border: 1px solid rgba(248,113,113,0.4);
+  }
+  .banner.warn { background: rgba(251,191,36,0.14); border-color: rgba(251,191,36,0.4); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: 10px 0; border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="row">
+  <div>
+    <h1>hand-gesture-os</h1>
+    <div class="muted" id="status"><span class="dot bad"></span>not paired</div>
+  </div>
+  <button id="unpairBtn" class="hide">Unpair</button>
+</div>
+
+<!-- Pairing --------------------------------------------------------- -->
+<section id="pairView">
+  <h2>Pair with your desktop</h2>
+  <div class="card stack">
+    <div class="muted">
+      On the desktop, open the hand-gesture-os page and press
+      <b>Pair a phone</b>. Type the six digits it shows.
+    </div>
+    <input id="codeInput" inputmode="numeric" autocomplete="one-time-code"
+           maxlength="6" placeholder="000000" style="text-align:center;
+           font:700 26px/1 ui-monospace,monospace; letter-spacing:.2em">
+    <button id="pairBtn" class="primary wide">Pair</button>
+    <div id="pairError" class="banner hide"></div>
+  </div>
+</section>
+
+<!-- Control --------------------------------------------------------- -->
+<section id="controlView" class="hide">
+  <div id="stopBanner" class="banner hide">
+    <b>Gesture input is disabled.</b>
+    <div class="muted" id="stopReason"></div>
+  </div>
+
+  <div id="confirmBanner" class="banner warn hide">
+    <b id="confirmOp"></b>
+    <div class="muted">
+      Waiting for a confirmation gesture at the camera. A phone tap cannot
+      confirm this — but you can cancel it from here.
+    </div>
+    <button id="cancelConfirmBtn" class="wide" style="margin-top:10px">Cancel it</button>
+  </div>
+
+  <h2>Safety</h2>
+  <div class="grid">
+    <button id="stopBtn" class="danger">Emergency stop</button>
+    <button id="resumeBtn">Resume</button>
+  </div>
+
+  <h2>Mode</h2>
+  <div class="grid" id="modes"></div>
+
+  <h2>Calibration</h2>
+  <div class="card stack">
+    <div class="row">
+      <span id="calStep" class="muted">idle</span>
+      <span id="calProgress" class="muted">—</span>
+    </div>
+    <div class="grid">
+      <button id="calStartBtn">Start</button>
+      <button id="calCancelBtn">Cancel</button>
+    </div>
+  </div>
+
+  <h2>Quick settings</h2>
+  <div class="grid" id="quickSettings"></div>
+
+  <h2>Windows</h2>
+  <div class="card"><ul id="windows"><li class="muted">Nothing open</li></ul></div>
+
+  <h2>Notifications <span id="unread" class="muted"></span></h2>
+  <div class="card">
+    <ul id="notifications"><li class="muted">Nothing new</li></ul>
+    <button id="clearNotifBtn" class="wide" style="margin-top:10px">Clear</button>
+  </div>
+</section>
+
+<script>
+(() => {
+  "use strict";
+  const el = (id) => document.getElementById(id);
+  const KEY = "hgos.companion.token";
+
+  let token = localStorage.getItem(KEY) || "";
+  let socket = null;
+  let poll = null;
+
+  const MODES = ["navigation", "window", "browser", "media", "file",
+                 "typing", "precision", "paused"];
+
+  /* ---------------- Pairing ---------------- */
+
+  async function pair() {
+    const code = el("codeInput").value.replace(/\D/g, "");
+    el("pairError").classList.add("hide");
+    if (code.length !== 6) return showPairError("Enter the six digits.");
+
+    el("pairBtn").disabled = true;
+    try {
+      const res = await fetch("/api/pair/redeem", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code, label: deviceLabel() }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) return showPairError(body.detail || "Pairing refused.");
+      token = body.token;
+      localStorage.setItem(KEY, token);
+      connect();
+    } catch (err) {
+      showPairError("Could not reach the desktop.");
+    } finally {
+      el("pairBtn").disabled = false;
+    }
+  }
+
+  function showPairError(message) {
+    const box = el("pairError");
+    box.textContent = message;
+    box.classList.remove("hide");
+  }
+
+  function deviceLabel() {
+    const ua = navigator.userAgent;
+    if (/iPhone|iPad/.test(ua)) return "iPhone";
+    if (/Android/.test(ua)) return "Android";
+    return "phone";
+  }
+
+  function unpair() {
+    localStorage.removeItem(KEY);
+    token = "";
+    if (socket) socket.close();
+    setPaired(false);
+  }
+
+  /* ---------------- Socket ---------------- */
+
+  function connect() {
+    if (!token) return;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(
+      `${proto}://${location.host}/ws/companion?token=${encodeURIComponent(token)}`
+    );
+
+    socket.onopen = () => {
+      setPaired(true);
+      setStatus("ok", "connected");
+      // Polling rather than a server push: a phone screen only needs a
+      // couple of updates a second, and this keeps the desktop's frame
+      // loop free of fan-out work.
+      poll = setInterval(() => send({ type: "poll" }), 500);
+    };
+    socket.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === "companion_state") render(msg);
+      else if (msg.state) render(msg.state);
+      else if (msg.type === "error" && msg.message === "unpaired") unpair();
+    };
+    socket.onclose = () => {
+      clearInterval(poll);
+      setStatus("bad", "disconnected");
+      // A closed socket right after pairing means the token was rejected.
+      if (!el("controlView").classList.contains("hide")) {
+        setTimeout(connect, 2000);
+      } else {
+        showPairError("That code did not work.");
+      }
+    };
+    socket.onerror = () => setStatus("bad", "error");
+  }
+
+  function send(obj) {
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
+  }
+  function command(command, extra = {}) {
+    send({ type: "command", command, ...extra });
+  }
+
+  function setStatus(cls, text) {
+    el("status").innerHTML = `<span class="dot ${cls}"></span>${text}`;
+  }
+
+  function setPaired(paired) {
+    el("pairView").classList.toggle("hide", paired);
+    el("controlView").classList.toggle("hide", !paired);
+    el("unpairBtn").classList.toggle("hide", !paired);
+    if (!paired) setStatus("bad", "not paired");
+  }
+
+  /* ---------------- Render ---------------- */
+
+  function esc(text) {
+    return String(text).replace(/[&<>]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  function render(s) {
+    el("stopBanner").classList.toggle("hide", !s.emergencyStopped);
+    if (s.emergencyStopped) {
+      el("stopReason").textContent =
+        s.stopReason ? `Stopped by: ${s.stopReason.replace(/_/g, " ")}.` : "";
+    }
+
+    el("confirmBanner").classList.toggle("hide", !s.pendingConfirmation);
+    if (s.pendingConfirmation) {
+      el("confirmOp").textContent =
+        `${s.pendingConfirmation.operation} — ${s.pendingConfirmation.description}`;
+    }
+
+    for (const btn of document.querySelectorAll("#modes button")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.mode === s.mode));
+    }
+
+    el("calStep").textContent = s.calibrating
+      ? s.calibrationStep.replace(/_/g, " ") : "idle";
+    el("calProgress").textContent = s.calibrating
+      ? Math.round(s.calibrationProgress * 100) + "%" : "—";
+
+    el("quickSettings").innerHTML = Object.entries(s.quickSettings || {})
+      .map(([key, value]) =>
+        `<button data-setting="${esc(key)}" aria-pressed="${value}">` +
+        `${esc(key.replace(/_/g, " "))}</button>`).join("");
+
+    el("windows").innerHTML = s.windows.length
+      ? s.windows.map((w) =>
+          `<li class="row"><span>${esc(w.title)}${w.focused ? " ·" : ""}</span>` +
+          `<span class="muted">${esc(w.state)}</span></li>`).join("")
+      : `<li class="muted">Nothing open</li>`;
+
+    el("unread").textContent = s.unread ? `(${s.unread})` : "";
+    el("notifications").innerHTML = s.notifications.length
+      ? s.notifications.map((n) =>
+          `<li><b>${esc(n.title)}</b> <span class="muted">${esc(n.app)}</span></li>`
+        ).join("")
+      : `<li class="muted">Nothing new</li>`;
+  }
+
+  /* ---------------- Wiring ---------------- */
+
+  el("modes").innerHTML = MODES.map((m) =>
+    `<button data-mode="${m}">${m}</button>`).join("");
+
+  el("pairBtn").onclick = pair;
+  el("codeInput").addEventListener("keydown", (e) => { if (e.key === "Enter") pair(); });
+  el("unpairBtn").onclick = unpair;
+  el("stopBtn").onclick = () => command("emergency_stop");
+  el("resumeBtn").onclick = () => command("release_stop");
+  el("calStartBtn").onclick = () => command("start_calibration");
+  el("calCancelBtn").onclick = () => command("cancel_calibration");
+  el("clearNotifBtn").onclick = () => command("clear_notifications");
+  el("cancelConfirmBtn").onclick = () => command("cancel_confirmation");
+
+  el("modes").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-mode]");
+    if (btn) command("set_mode", { mode: btn.dataset.mode });
+  });
+  el("quickSettings").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-setting]");
+    if (btn) command("toggle_setting", { name: btn.dataset.setting });
+  });
+
+  if (token) connect(); else setPaired(false);
+})();
+</script>
+</body>
+</html>
